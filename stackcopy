@@ -1,4 +1,10 @@
 #!/usr/bin/python3
+
+# Stackcopy version 1.0 by Alan Rockefeller
+# July 10, 2025
+
+# Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
+
 import sys
 import os
 import shutil
