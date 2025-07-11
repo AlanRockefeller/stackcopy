@@ -10,21 +10,30 @@ import sys
 import os
 import shutil
 import argparse
+import re
 from datetime import datetime, date, timedelta
 
 def create_new_filename(stem, ext, prefix=None):
     """Create a new filename with optional prefix and 'stacked' suffix."""
     parts = [stem]
     if prefix:
-        parts.append(prefix)
+        # Trim whitespace from prefix to avoid double spaces
+        prefix = prefix.strip()
+        if prefix:  # Only add if not empty after stripping
+            parts.append(prefix)
     parts.append("stacked")
-    return f"{' '.join(parts)}{ext}"
+    # Join with single space and collapse any multiple spaces
+    new_stem = ' '.join(parts)
+    # Collapse multiple spaces into single spaces
+    new_stem = re.sub(r'\s+', ' ', new_stem)
+    return f"{new_stem}{ext}"
 
 def is_already_processed(filename):
-    """Check if a file has already been processed (contains ' stacked' pattern)."""
+    """Check if a file has already been processed (contains 'stacked' as a word)."""
     stem, ext = os.path.splitext(filename)
-    # More precise check: look for ' stacked' as a separate word/phrase
-    return ' stacked' in stem.lower()
+    # Use word boundary regex to match 'stacked' as a complete word
+    # This will match: "image stacked.jpg", "stacked_image.jpg", "stacked-photo.jpg", etc.
+    return bool(re.search(r'\bstacked\b', stem.lower()))
 
 def get_file_date(file_path):
     """Get the modification date of a file (most reliable across platforms)."""
@@ -57,13 +66,18 @@ def paths_are_same(path1, path2):
 
 def safe_file_operation(operation, src_path, dest_path, operation_name, force=False, dry_run=False):
     """Safely perform file operations with error handling and overwrite protection."""
+    # Check if destination exists (even in dry-run mode for accurate preview)
+    if os.path.exists(dest_path) and not force:
+        if dry_run:
+            print(f"Warning: '{dest_path}' already exists. Would need --force to overwrite.")
+            return False
+        else:
+            print(f"Warning: '{dest_path}' already exists. Use --force to overwrite.")
+            return False
+    
+    # If dry run, we've done our checks, now return success
     if dry_run:
         return True
-
-    # Check if destination exists
-    if os.path.exists(dest_path) and not force:
-        print(f"Warning: '{dest_path}' already exists. Use --force to overwrite.")
-        return False
 
     try:
         if operation == "move":
@@ -249,10 +263,10 @@ def main():
                 stem, ext = os.path.splitext(entry.name)
                 # Check if the file is a JPG (case-insensitive)
                 if ext.lower() in JPG_EXTENSIONS:
-                    # Skip if the filename already contains " stacked"
+                    # Skip if the filename already contains "stacked" as a word
                     if is_already_processed(entry.name):
                         if args.verbose:
-                            print(f"Skipping '{entry.name}' because it already contains ' stacked'.")
+                            print(f"Skipping '{entry.name}' because it already contains 'stacked'.")
                         skipped_count += 1
                         continue
 
