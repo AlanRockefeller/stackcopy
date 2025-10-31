@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Stackcopy version 1.1 by Alan Rockefeller
-# August 30, 2025
+# October 30, 2025
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 
@@ -229,6 +229,14 @@ def main():
         # For lightroom mode, source and working directory are the same
         src_dir = work_dir
         dest_dir = work_dir  # We're renaming in-place
+
+        # Ensure the Lightroom base directory exists
+        if not args.dry:
+            try:
+                os.makedirs(LIGHTROOM_BASE_DIR, exist_ok=True)
+            except OSError as e:
+                print(f"Error creating Lightroom base directory '{LIGHTROOM_BASE_DIR}': {e}")
+                sys.exit(1)
     else:  # --stackcopy mode
         operation_mode = "stackcopy"
         work_dir = normalize_path(args.stackcopy)
@@ -262,7 +270,7 @@ def main():
                 stem, ext = os.path.splitext(entry.name)
                 ext_lower = ext.lower()
 
-                if not stem in file_db:
+                if stem not in file_db:
                     file_db[stem] = {'paths': {}}
                 
                 if ext_lower in RAW_EXTENSIONS:
