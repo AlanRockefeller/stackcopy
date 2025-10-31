@@ -7,11 +7,12 @@
 
 This script finds the stacked images by looking for .jpg files which have no corresponding raw file.   This is the only way I have found to detect which images are the stacked versions - the file sizes / exif data is not unique for photos created with in-camera stacking.
 
-The script has three main modes:
+The script has four main modes:
 
 - **Copy mode**: Finds JPGs without raw files and copies them somewhere else
 - **Rename mode**: Finds those JPGs and renames them in-place by adding " stacked" to the filename
 - **Stackcopy mode**: Copies them to a "stacked" subfolder AND adds " stacked" to their names
+- **Lightroom mode**: Moves the input files of a stack to a dated folder structure and renames the output file in place.
 
 Plus, you can filter by date, add custom prefixes, and more. 
 
@@ -55,6 +56,14 @@ Here are some real-world scenarios:
 ./stackcopy.py --stackcopy /photos/Lightroom/2025/2025-07-10/
 ```
 
+### "Organize my stacks for Lightroom"
+
+This moves the input files (JPG and ORF) of a stack to a dated folder, and renames the output JPG in place.
+
+```bash
+./stackcopy.py --lightroom /photos/camera-import/
+```
+
 ### "Show me what would happen without actually doing anything"
 
 Add `--dry` to any command:
@@ -84,6 +93,7 @@ Here's what you can do:
 - `--copy SOURCE DEST` - Copy orphaned JPGs from SOURCE to DEST
 - `--rename [DIR]` - Rename orphaned JPGs in-place (default: current directory)
 - `--stackcopy [DIR]` - Copy to a 'stacked' subfolder with renamed files
+- `--lightroom [DIR]` - Move stack input files to a dated folder and rename stack output files in place.
 
 ### Date Filters (for copy operations):
 - `--today` - Only process files from today
@@ -147,8 +157,8 @@ You went mushroom hunting and want to just copy the stacked photos you took toda
 
 ## Version Info
 
-- **Version**: 1.0
-- **Date**: July 10, 2025
+- **Version**: 1.1
+- **Date**: October 30, 2025
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
