@@ -325,7 +325,7 @@ def main():
                 failed_count += 1
 
             # Find associated input files (3-15 sequential pairs before the output)
-            match = re.match(r'([a-zA-Z_]*)(\d+)', output_stem)
+            match = re.match(r'([a-zA-Z0-9_-]*)(\d{6,})', output_stem)
             if not match:
                 continue
 
