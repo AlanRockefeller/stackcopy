@@ -17,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta
 
 LIGHTROOM_BASE_DIR = "/home/alan/pictures/olympus.stack.input.photos/"
+# Regex to identify numeric stems for sequence grouping.
+# It assumes numeric parts are 6 or more digits, common for Olympus/OM System in-camera stacking.
+# Stems with fewer digits (e.g., 4-digit counters) will not be treated as numeric sequences.
 NUMERIC_STEM_REGEX = re.compile(r'([a-zA-Z0-9_-]*)(\d{6,})')
 
 
@@ -277,6 +280,24 @@ def main():
     JPG_EXTENSIONS = {'.jpg', '.jpeg'}
 
     # --- 1. Scan directory and build file database ---
+    # file_db stores metadata for each unique file stem found in the source directory.
+    # Structure:
+    # {
+    #   "filename_stem": {
+    #     "files": {
+    #       "raw": {"path": "...", "mtime": datetime_obj, "date": date_obj},
+    #       "jpg": {"path": "...", "mtime": datetime_obj, "date": date_obj}
+    #     },
+    #     "has_raw": bool,
+    #     "has_jpg": bool,
+    #     "numeric": {
+    #       "prefix": "alpha_prefix",
+    #       "num": int_sequence_number,
+    #       "width": digit_width
+    #     }
+    #   },
+    #   ...
+    # }
     file_db = {}
     try:
         for entry in os.scandir(src_dir):
@@ -445,7 +466,7 @@ def main():
                     ):
                         too_many_in_burst = True
                         if args.verbose:
-                            print(f"Skipping '{output_stem}' — appears to be part of a focus-bracketing burst (>15 frames).")
+                            print(f"Skipping '{output_stem}' - appears to be part of a focus-bracketing burst (>15 frames).")
 
             # Only treat it as a stack if we found 3–15 inputs AND no earlier frames in same burst
             if (3 <= len(potential_inputs) <= 15) and not too_many_in_burst:
@@ -465,7 +486,12 @@ def main():
                         file_date.strftime('%Y-%m-%d')
                     )
 
-                    ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry)
+                    try:
+                        ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry)
+                    except OSError as e:
+                        print(f"Error creating Lightroom destination directory '{lightroom_dest_dir}': {e}")
+                        failed_count += 1
+                        continue
 
                     for file_type in ['jpg', 'raw']:
                         file_info = file_db[input_stem]['files'].get(file_type)
@@ -490,7 +516,7 @@ def main():
         copy_executor = ThreadPoolExecutor(max_workers=args.jobs) if use_parallel_copy else None
         pending_copy_jobs = []
 
-        for stem, data in file_db.items():
+        for data in file_db.values(): # Changed from for stem, data in file_db.items()
             if data.get('has_jpg') and not data.get('has_raw'):
                 jpg_record = data['files'].get('jpg')
                 if not jpg_record:
