@@ -22,8 +22,6 @@ Now supports:
 
 - Cross-device safe move using fallback copy+delete
 
-- MD5-based integrity checks to auto-overwrite only identical files
-
 
 ## Installation
 
@@ -119,7 +117,7 @@ Here's what you can do:
 ### Data Integrity & Safety
 
 - Automatically avoids overwriting different files unless `--force` is set
-- If destination file exists and has identical MD5 checksum, the move proceeds safely
+- If destination file exists and has identical file contents, the move proceeds safely
 
 
 ## How it Works

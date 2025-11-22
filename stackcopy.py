@@ -12,7 +12,6 @@ import shutil
 import argparse
 import re
 import errno
-import hashlib
 from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta
@@ -355,8 +354,6 @@ def main():
         src_dir = work_dir
         dest_dir = work_dir  # We're renaming in-place
 
-        cross_device_lightroom = is_cross_device(src_dir, LIGHTROOM_BASE_DIR)
-
         # Ensure the Lightroom base directory exists
         try:
             ensure_directory_once(LIGHTROOM_BASE_DIR, created_dirs, args.dry)
@@ -453,7 +450,6 @@ def main():
     skipped_count = 0
     failed_count = 0
     moved_input_count = 0
-    moved_input_count = 0
     stack_outputs_seen = 0  # number of stacked JPG outputs processed in Lightroom mode
 
     if args.lightroom is not None:
@@ -469,7 +465,7 @@ def main():
                     continue
 
                 if target_date:
-                    file_date = jpg_record.get('date')
+                    file_date = get_file_date(jpg_record, args.verbose)
                     if file_date is None or file_date != target_date:
                         continue
 
@@ -723,7 +719,7 @@ def main():
                                 new_filename = filename
                                 dest_path = os.path.join(dest_dir, filename)
                             future = copy_executor.submit(
-                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry, False
+                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry
                             )
                             pending_copy_jobs.append({
                                 'future': future, 'filename': filename, 'dest_filename': new_filename,
@@ -787,7 +783,7 @@ def main():
                         else:
                             new_filename = filename
                             dest_path = os.path.join(dest_dir, filename)
-                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry, False)
+                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry)
 
                     if success is not None:
                         if success:
