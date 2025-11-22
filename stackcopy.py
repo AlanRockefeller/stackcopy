@@ -634,7 +634,6 @@ def main():
                         dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
                         # Collect move operations instead of executing them immediately
                         move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir))
-                    moved_stems.add(input_stem)
 
         # --- Execute collected moves ---
         if move_operations: # Only proceed if there are operations to execute
@@ -652,6 +651,7 @@ def main():
                             if future.result():
                                 # Increment counter if successful
                                 moved_input_count += 1
+                                moved_stems.add(corresponding_input_stem)
                                 if args.verbose:
                                     print(f"Moved input file '{orig_name}' to '{ldest}'")
                             else:
@@ -663,6 +663,7 @@ def main():
                 for src_path, dest_path, desc, orig_name, ldest in move_operations:
                     if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry):
                         moved_input_count += 1
+                        moved_stems.add(corresponding_input_stem)
                         if args.verbose or args.dry:
                             print(f"{'Would move' if args.dry else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
@@ -729,17 +730,23 @@ def main():
                             })
 
                 for job in pending_copy_jobs:
-                    success = job['future'].result()
-                    if success:
-                        processed_count += 1
-                    else:
+                    try:
+                        success = job['future'].result()
+                        if success:
+                            processed_count += 1
+                        else:
+                            failed_count += 1
+                    except Exception as e:
+                        print(f"Error processing '{job['filename']}': {e}")
                         failed_count += 1
+                    
                     if args.verbose or args.dry:
                         message = format_action_message(
                             operation_mode, job['filename'], job['dest_filename'],
                             job['dest_dir'], success, args.dry, job['used_prefix']
                         )
                         print(message)
+
         else:
             # Sequential processing logic (no ThreadPoolExecutor)
             for data in file_db.values():
