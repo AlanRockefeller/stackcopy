@@ -1,6 +1,6 @@
 # stackcopy
 
-*Because Olympus / OM System cameras save all of the input files and output jpg when using in-camera stacking - however often you just want the final stacked images, or you want to rename the stacked photos so you can filter for them in Lightroom.*
+Olympus / OM-System in-camera stacking produces many RAW/JPG frames per final JPG. Lightroom doesn’t automatically group or separate them, so imports get cluttered. This script separates originals from stacked outputs automatically, so you only need to manually process the photos that actually need your attention.
 
 
 ## What can it do?
@@ -12,9 +12,18 @@ The script has four main modes:
 - **Copy mode**: Finds JPGs without raw files and copies them somewhere else
 - **Rename mode**: Finds those JPGs and renames them in-place by adding " stacked" to the filename
 - **Stackcopy mode**: Copies them to a "stacked" subfolder AND adds " stacked" to their names
-- **Lightroom mode**: Moves the input files of a stack to a dated folder structure and renames the output file in place.
+- **Lightroom mode**: Moves the input files of a stack to a dated folder structure and renames the output file in place.  Groups based on numeric sequence and timestamp window - the idea is that in-camera focus stacks are renamed and the inputs saved to a separate place, but single shots or focus bracketing isn't moved since you'll want to process those manually.    
 
 Plus, you can filter by date, add custom prefixes, and more. 
+
+Now supports:
+
+- Multi-threaded copying (--jobs) for better performance
+
+- Cross-device safe move using fallback copy+delete
+
+- MD5-based integrity checks to auto-overwrite only identical files
+
 
 ## Installation
 
@@ -105,6 +114,13 @@ Here's what you can do:
 - `--dry` or `--dry-run` - Preview what would happen without making changes
 - `-v` or `--verbose` - Show detailed info about each file processed
 - `--force` - Overwrite existing files without asking
+- '--jobs' N              Use multiple threads for copying (faster on large imports)
+
+### Data Integrity & Safety
+
+- Automatically avoids overwriting different files unless `--force` is set
+- If destination file exists and has identical MD5 checksum, the move proceeds safely
+
 
 ## How it Works
 
@@ -157,8 +173,8 @@ You went mushroom hunting and want to just copy the stacked photos you took toda
 
 ## Version Info
 
-- **Version**: 1.1
-- **Date**: October 30, 2025
+- **Version**: 1.3
+- **Date**: November 22, 2025
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
