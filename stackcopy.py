@@ -634,7 +634,6 @@ def main():
                         dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
                         # Collect move operations instead of executing them immediately
                         move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir))
-                        moved_input_count += 1 # Increment for planning the move
                     moved_stems.add(input_stem)
 
         # --- Execute collected moves ---
@@ -651,6 +650,8 @@ def main():
                         orig_name, ldest = future_to_op[future]
                         try:
                             if future.result():
+                                # Increment counter if successful
+                                moved_input_count += 1
                                 if args.verbose:
                                     print(f"Moved input file '{orig_name}' to '{ldest}'")
                             else:
@@ -661,6 +662,7 @@ def main():
             else:  # Sequential move for single job or dry run
                 for src_path, dest_path, desc, orig_name, ldest in move_operations:
                     if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry):
+                        moved_input_count += 1
                         if args.verbose or args.dry:
                             print(f"{'Would move' if args.dry else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
