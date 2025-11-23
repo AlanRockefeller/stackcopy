@@ -12,7 +12,6 @@ import shutil
 import argparse
 import re
 import errno
-import hashlib
 from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta
@@ -355,8 +354,6 @@ def main():
         src_dir = work_dir
         dest_dir = work_dir  # We're renaming in-place
 
-        cross_device_lightroom = is_cross_device(src_dir, LIGHTROOM_BASE_DIR)
-
         # Ensure the Lightroom base directory exists
         try:
             ensure_directory_once(LIGHTROOM_BASE_DIR, created_dirs, args.dry)
@@ -453,7 +450,6 @@ def main():
     skipped_count = 0
     failed_count = 0
     moved_input_count = 0
-    moved_input_count = 0
     stack_outputs_seen = 0  # number of stacked JPG outputs processed in Lightroom mode
 
     if args.lightroom is not None:
@@ -469,7 +465,7 @@ def main():
                     continue
 
                 if target_date:
-                    file_date = jpg_record.get('date')
+                    file_date = get_file_date(jpg_record, args.verbose)
                     if file_date is None or file_date != target_date:
                         continue
 
@@ -637,9 +633,7 @@ def main():
                         src_path = file_info['path']
                         dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
                         # Collect move operations instead of executing them immediately
-                        move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir))
-                        moved_input_count += 1 # Increment for planning the move
-                    moved_stems.add(input_stem)
+                        move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir, input_stem))
 
         # --- Execute collected moves ---
         if move_operations: # Only proceed if there are operations to execute
@@ -647,14 +641,16 @@ def main():
                 with ThreadPoolExecutor(max_workers=args.jobs) as executor:
                     # Submit all move operations to the thread pool
                     future_to_op = {
-                        executor.submit(safe_file_operation, "move", src, dst, desc, args.force, args.dry): (orig_name, ldest)
-                        for src, dst, desc, orig_name, ldest in move_operations
+                                                    executor.submit(safe_file_operation, "move", src, dst, desc, args.force, args.dry): (orig_name, ldest, inp_stem)                            for src, dst, desc, orig_name, ldest, inp_stem in move_operations
                     }
                     # Process results as they complete
                     for future in future_to_op:
-                        orig_name, ldest = future_to_op[future]
+                        orig_name, ldest, inp_stem = future_to_op[future]
                         try:
                             if future.result():
+                                # Increment counter if successful
+                                moved_input_count += 1
+                                moved_stems.add(inp_stem)
                                 if args.verbose:
                                     print(f"Moved input file '{orig_name}' to '{ldest}'")
                             else:
@@ -663,8 +659,10 @@ def main():
                             print(f"Error moving file '{orig_name}': {e}")
                             failed_count += 1
             else:  # Sequential move for single job or dry run
-                for src_path, dest_path, desc, orig_name, ldest in move_operations:
+                for src_path, dest_path, desc, orig_name, ldest, inp_stem in move_operations:
                     if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry):
+                        moved_input_count += 1
+                        moved_stems.add(inp_stem)
                         if args.verbose or args.dry:
                             print(f"{'Would move' if args.dry else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
@@ -723,7 +721,7 @@ def main():
                                 new_filename = filename
                                 dest_path = os.path.join(dest_dir, filename)
                             future = copy_executor.submit(
-                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry, False
+                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry
                             )
                             pending_copy_jobs.append({
                                 'future': future, 'filename': filename, 'dest_filename': new_filename,
@@ -731,17 +729,23 @@ def main():
                             })
 
                 for job in pending_copy_jobs:
-                    success = job['future'].result()
-                    if success:
-                        processed_count += 1
-                    else:
+                    try:
+                        success = job['future'].result()
+                        if success:
+                            processed_count += 1
+                        else:
+                            failed_count += 1
+                    except Exception as e:
+                        print(f"Error processing '{job['filename']}': {e}")
                         failed_count += 1
+                    
                     if args.verbose or args.dry:
                         message = format_action_message(
                             operation_mode, job['filename'], job['dest_filename'],
                             job['dest_dir'], success, args.dry, job['used_prefix']
                         )
                         print(message)
+
         else:
             # Sequential processing logic (no ThreadPoolExecutor)
             for data in file_db.values():
@@ -787,7 +791,7 @@ def main():
                         else:
                             new_filename = filename
                             dest_path = os.path.join(dest_dir, filename)
-                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry, False)
+                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry)
 
                     if success is not None:
                         if success:
