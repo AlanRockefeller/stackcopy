@@ -641,7 +641,10 @@ def main():
                 with ThreadPoolExecutor(max_workers=args.jobs) as executor:
                     # Submit all move operations to the thread pool
                     future_to_op = {
-                                                    executor.submit(safe_file_operation, "move", src, dst, desc, args.force, args.dry): (orig_name, ldest, inp_stem)                            for src, dst, desc, orig_name, ldest, inp_stem in move_operations
+                            executor.submit(
+                                safe_file_operation, "move", src, dst, desc, args.force, args.dry
+                                ): (orig_name, ldest, inp_stem)
+                                for src, dst, desc, orig_name, ldest, inp_stem in move_operations
                     }
                     # Process results as they complete
                     for future in future_to_op:
@@ -729,9 +732,10 @@ def main():
                             })
 
                 for job in pending_copy_jobs:
+                    success = False
                     try:
                         success = job['future'].result()
-                        if success:
+                        if success: # noqa: BLE001 - top-level CLI error boundary
                             processed_count += 1
                         else:
                             failed_count += 1
