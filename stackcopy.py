@@ -633,7 +633,7 @@ def main():
                         src_path = file_info['path']
                         dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
                         # Collect move operations instead of executing them immediately
-                        move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir))
+                        move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir, input_stem))
 
         # --- Execute collected moves ---
         if move_operations: # Only proceed if there are operations to execute
@@ -641,17 +641,16 @@ def main():
                 with ThreadPoolExecutor(max_workers=args.jobs) as executor:
                     # Submit all move operations to the thread pool
                     future_to_op = {
-                        executor.submit(safe_file_operation, "move", src, dst, desc, args.force, args.dry): (orig_name, ldest)
-                        for src, dst, desc, orig_name, ldest in move_operations
+                                                    executor.submit(safe_file_operation, "move", src, dst, desc, args.force, args.dry): (orig_name, ldest, inp_stem)                            for src, dst, desc, orig_name, ldest, inp_stem in move_operations
                     }
                     # Process results as they complete
                     for future in future_to_op:
-                        orig_name, ldest = future_to_op[future]
+                        orig_name, ldest, inp_stem = future_to_op[future]
                         try:
                             if future.result():
                                 # Increment counter if successful
                                 moved_input_count += 1
-                                moved_stems.add(corresponding_input_stem)
+                                moved_stems.add(inp_stem)
                                 if args.verbose:
                                     print(f"Moved input file '{orig_name}' to '{ldest}'")
                             else:
@@ -660,10 +659,10 @@ def main():
                             print(f"Error moving file '{orig_name}': {e}")
                             failed_count += 1
             else:  # Sequential move for single job or dry run
-                for src_path, dest_path, desc, orig_name, ldest in move_operations:
+                for src_path, dest_path, desc, orig_name, ldest, inp_stem in move_operations:
                     if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry):
                         moved_input_count += 1
-                        moved_stems.add(corresponding_input_stem)
+                        moved_stems.add(inp_stem)
                         if args.verbose or args.dry:
                             print(f"{'Would move' if args.dry else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
