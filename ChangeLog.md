@@ -1,5 +1,34 @@
 # Change Log
 
+
+## **[1.4] — 2026-01-04**
+- Atomic File Operations (_atomic_copy2 function)
+
+Implements atomic copy by writing to a temporary file first, then using os.replace() to atomically swap it with the destination
+Prevents partial/corrupted files if operations are interrupted
+Includes cleanup of temp files in case of errors
+
+
+- New --lightroomimport Mode
+
+Extends --lightroom functionality to also move remaining non-stacked files to ~/pictures/Lightroom/YEAR/DATE/
+Moves stacked output JPGs to the Lightroom import directory structure
+Tracks three categories: input files (stacked frames), output files (stacked results), and remaining files
+
+
+- Self-Healing Logic
+
+Detects when destination files exist but are 0 bytes (from interrupted previous runs)
+Automatically replaces them with valid source files
+Works in both dry-run and normal mode
+
+
+- New --debug-stacks Flag
+
+Provides detailed diagnostic output showing why stacks are accepted or rejected
+Shows timestamp gaps, sequence matching, and safety check results
+Very helpful for troubleshooting stack detection issues
+
 ## **[1.3] — 2025-11-22**
 ### **Added**
 - Lightroom mode now processes stacked output JPGs *even if already renamed* (i.e., containing `"stacked"` in filename).

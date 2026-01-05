@@ -1,14 +1,15 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.3 by Alan Rockefeller
-# November 22, 2025
+# Stackcopy version 1.4 by Alan Rockefeller
+# January 4, 2026
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 
 import sys
 import os
 import shutil
+import uuid
 import argparse
 import re
 import errno
@@ -118,18 +119,52 @@ def files_identical(src_path, dest_path, chunk_size=1024 * 1024):
         return False
 
 
+def _atomic_copy2(src_path: str, dest_path: str) -> None:
+    """Copy to a temp file in dest dir, then atomically replace dest_path."""
+    dest_dir = os.path.dirname(dest_path)
+    os.makedirs(dest_dir, exist_ok=True)
+    tmp_path = os.path.join(dest_dir, f".__stackcopy_tmp__{os.path.basename(dest_path)}.{uuid.uuid4().hex}")
+    try:
+        shutil.copy2(src_path, tmp_path)
+        # Atomic replace: dest_path is either old or new, never partial
+        os.replace(tmp_path, dest_path)
+    finally:
+        # Clean up temp if something went wrong before replace
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+
 def safe_file_operation(operation, src_path, dest_path, operation_name, force=False, dry_run=False):
     # If destination exists and we're not forcing, see if it's identical to the source.
     if os.path.exists(dest_path) and not force:
-        if not dry_run and os.path.exists(src_path):
+        # Check self-heal first (applies to both dry-run and real)
+        is_self_heal = False
+        try:
+            if os.path.exists(src_path):
+                src_size = os.path.getsize(src_path)
+                dst_size = os.path.getsize(dest_path)
+                # Self-heal: if destination is a 0-byte placeholder but source is non-zero
+                if src_size > 0 and dst_size == 0:
+                    is_self_heal = True
+        except OSError:
+            pass
+
+        if is_self_heal:
+            msg = "replacing from source" if not dry_run else "would replace from source"
+            print(f"Note: destination '{dest_path}' exists but is 0 bytes; {msg}.")
+            force = True
+        elif dry_run:
+            print(f"Warning: '{dest_path}' already exists. Would need --force to overwrite.")
+            return False
+        elif os.path.exists(src_path):
             # If contents are identical, treat this as success.
             if files_identical(src_path, dest_path):
                 if operation == "move":
-                    # For moves, delete the source to complete the move semantics.
                     try:
                         os.unlink(src_path)
                     except OSError as delete_error:
-                        # We still consider this a success, but let the user know the card wasn't cleaned up.
                         print(
                             f"Note: destination '{dest_path}' already exists with identical content; "
                             f"source '{src_path}' could not be deleted: {delete_error}"
@@ -141,35 +176,33 @@ def safe_file_operation(operation, src_path, dest_path, operation_name, force=Fa
                         )
                     return True
                 else:
-                    # For copy, nothing to do: destination has the same bits already.
                     print(
                         f"Note: destination '{dest_path}' already exists with identical content; "
                         f"skipping copy from '{src_path}'."
                     )
                     return True
+            
+            print(f"Warning: '{dest_path}' already exists. Use --force to overwrite.")
+            return False
+        else:
+            print(f"Warning: '{dest_path}' already exists. Use --force to overwrite.")
+            return False
 
-        # Either not dry-run, not identical, or we couldn't compare → warn as before.
-        msg = "Would need --force to overwrite" if dry_run else "Use --force to overwrite"
-        print(f"Warning: '{dest_path}' already exists. {msg}.")
-        return False
-
-    # Normal path: dest doesn't exist, or force=True
     if dry_run:
         return True
 
     try:
         if operation == "move":
             try:
-                # Try a normal rename first (same filesystem)
+                # Same-filesystem fast path
                 os.replace(src_path, dest_path)
             except OSError as move_error:
                 if move_error.errno == errno.EXDEV:
-                    # Different filesystem: do our own copy + delete
-                    shutil.copyfile(src_path, dest_path)
+                    # Cross-device: atomic copy then delete source
+                    _atomic_copy2(src_path, dest_path)
                     try:
                         os.unlink(src_path)
                     except OSError as delete_error:
-                        # If deletion fails, treat as non-fatal: we still have the copy
                         print(
                             f"Note: {operation_name} '{src_path}' to '{dest_path}' completed, "
                             f"but source could not be deleted: {delete_error}"
@@ -177,7 +210,7 @@ def safe_file_operation(operation, src_path, dest_path, operation_name, force=Fa
                 else:
                     raise
         elif operation == "copy":
-            shutil.copy2(src_path, dest_path)
+            _atomic_copy2(src_path, dest_path)
 
         return True
 
@@ -195,7 +228,7 @@ def is_cross_device(src_path, dest_path):
 
 def format_action_message(operation_mode, filename, dest_filename, dest_dir, success, dry_run, used_prefix):
     """Generate consistent action messages for all operations."""
-    if operation_mode == "rename" or operation_mode == "lightroom":
+    if operation_mode == "rename" or operation_mode == "lightroom" or operation_mode == "lightroomimport":
         if dry_run:
             action = "Would rename"
         else:
@@ -238,6 +271,10 @@ def main():
     mode_group.add_argument("--lightroom", nargs='?', const=os.getcwd(), metavar='DIR',
                             help="Move input files (JPG and ORF) to a dated directory structure and rename the stacked JPG in place.")
 
+    # Lightroom import mode - optional directory argument
+    mode_group.add_argument("--lightroomimport", nargs='?', const=os.getcwd(), metavar='DIR',
+                            help="Same as --lightroom, but moves remaining files to ~/pictures/Lightroom/YEAR/DATE/.")
+
     # Add date filtering options
     date_group = parser.add_argument_group('Date Filtering (optional, for copy operations)')
     date_group.add_argument("--today", action="store_true", help="Process JPGs created today that don't have a corresponding raw file.")
@@ -249,7 +286,7 @@ def main():
                         help="Add a custom prefix before ' stacked' in the filename when using --copy, --rename, or --stackcopy.")
 
     # Add dry-run option
-    parser.add_argument("--dry", "--dry-run", action="store_true",
+    parser.add_argument("--dry", "--dry-run", dest="dry_run", action="store_true",
                         help="Show what would happen without making any actual changes")
 
     # Add verbose flag
@@ -257,6 +294,9 @@ def main():
 
     # Add overwrite protection option
     parser.add_argument("--force", action="store_true", help="Overwrite existing files without prompting")
+
+    # Add debug flag for stack detection
+    parser.add_argument("--debug-stacks", action="store_true", help="Enable detailed diagnostic output for stack detection")
 
     parser.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
                         help="Number of parallel copy workers to use for --copy/--stackcopy (default: 1)")
@@ -274,7 +314,7 @@ def main():
             print(f"Warning: --jobs reduced from {args.jobs} to {cpu_count * 2} (2x CPU cores) to avoid resource exhaustion.")
         args.jobs = cpu_count * 2
 
-    if args.lightroom and not args.dry:
+    if (args.lightroom or args.lightroomimport) and not args.dry_run:
         # If user didn't explicitly request more jobs, pick something sensible
         if args.jobs == 1:
             # 4 workers max, but don't exceed 2x CPU cores
@@ -303,7 +343,7 @@ def main():
         parser.error("The --today, --yesterday, and --date arguments cannot be used with --rename operation.")
 
     # If no operation mode is specified, show help and exit
-    if not args.copy and args.rename is None and args.stackcopy is None and args.lightroom is None:
+    if not args.copy and args.rename is None and args.stackcopy is None and args.lightroom is None and args.lightroomimport is None:
         parser.print_help()
         sys.exit(1)
 
@@ -325,7 +365,7 @@ def main():
 
         # Ensure the destination directory exists, create if necessary (but not in dry run)
         try:
-            ensure_directory_once(dest_dir, created_dirs, args.dry)
+            ensure_directory_once(dest_dir, created_dirs, args.dry_run)
         except OSError as e:
             print(f"Error creating destination directory '{dest_dir}': {e}")
             sys.exit(1)
@@ -341,9 +381,9 @@ def main():
         # For rename mode, source and working directory are the same
         src_dir = work_dir
         dest_dir = work_dir  # We're renaming in-place
-    elif args.lightroom is not None: # --lightroom mode
-        operation_mode = "lightroom"
-        work_dir = normalize_path(args.lightroom)
+    elif args.lightroom is not None or args.lightroomimport is not None: # --lightroom mode
+        operation_mode = "lightroom" if args.lightroom is not None else "lightroomimport"
+        work_dir = normalize_path(args.lightroom if args.lightroom is not None else args.lightroomimport)
 
         # Verify that the specified directory exists
         if not os.path.isdir(work_dir):
@@ -356,7 +396,7 @@ def main():
 
         # Ensure the Lightroom base directory exists
         try:
-            ensure_directory_once(LIGHTROOM_BASE_DIR, created_dirs, args.dry)
+            ensure_directory_once(LIGHTROOM_BASE_DIR, created_dirs, args.dry_run)
         except OSError as e:
             print(f"Error creating Lightroom base directory '{LIGHTROOM_BASE_DIR}': {e}")
             sys.exit(1)
@@ -374,7 +414,7 @@ def main():
         # Create a 'stacked' subdirectory for the copies
         dest_dir = os.path.join(work_dir, "stacked")
         try:
-            ensure_directory_once(dest_dir, created_dirs, args.dry)
+            ensure_directory_once(dest_dir, created_dirs, args.dry_run)
         except OSError as e:
             print(f"Error creating stacked directory '{dest_dir}': {e}")
             sys.exit(1)
@@ -450,12 +490,14 @@ def main():
     skipped_count = 0
     failed_count = 0
     moved_input_count = 0
+    moved_output_count = 0
     stack_outputs_seen = 0  # number of stacked JPG outputs processed in Lightroom mode
+    remaining_moved_count = 0
 
-    if args.lightroom is not None:
+    if args.lightroom is not None or args.lightroomimport is not None:
         # --- Lightroom Mode ---
         # Find stacked output files (JPG without ORF)
-        stacked_outputs = []
+        stacked_outputs = set()
         for stem, data in file_db.items():
             # Any JPG without a corresponding RAW is considered a stacked output,
             # even if it has already been renamed with "stacked" in the filename.
@@ -469,182 +511,204 @@ def main():
                     if file_date is None or file_date != target_date:
                         continue
 
-                stacked_outputs.append(stem)
+                stacked_outputs.add(stem)
 
 
-        # Sort to process sequentially
-        stacked_outputs.sort()
 
         moved_stems = set()
         MAX_STACK_GAP_SECONDS = 20
         move_operations = [] # List of (src, dest, description, orig_name_for_logging, dest_dir_for_logging)
 
 
-        for output_stem in stacked_outputs:
+        for output_stem in sorted(stacked_outputs):
             output_data = file_db[output_stem]
             jpg_record = output_data['files'].get('jpg')
             if not jpg_record:
                 continue
 
-            stack_outputs_seen += 1  # count this stacked output
+            stack_outputs_seen += 1
 
             orig_jpg_path = jpg_record['path']
             output_mtime = get_file_mtime(jpg_record, args.verbose)
-
-            # Possibly rename the stacked output file.
-            # If it's already been processed (contains 'stacked'), skip renaming
-            # but still treat it as a valid anchor for moving input frames.
             output_filename = os.path.basename(orig_jpg_path)
-            rename_ok = True
 
+            if args.debug_stacks:
+                print(f"\n--- Debugging Stack for Output: {output_filename} ---")
+                print(f"  - Output JPG: '{output_filename}' (mtime: {output_mtime})")
+
+            # Rename the stacked output if not already processed
             if not is_already_processed(output_filename):
                 stem_only, ext = os.path.splitext(output_filename)
                 new_filename = create_new_filename(stem_only, ext, args.prefix)
                 dest_path = os.path.join(dest_dir, new_filename)
 
-                rename_ok = safe_file_operation(
-                    "move",
-                    orig_jpg_path,
-                    dest_path,
-                    "renaming",
-                    args.force,
-                    args.dry,
-                )
-
-                if rename_ok:
+                if safe_file_operation("move", orig_jpg_path, dest_path, "renaming", args.force, args.dry_run):
+                    jpg_record.update({'path': dest_path, 'basename': new_filename, 'entry': None})
                     processed_count += 1
-                    if args.verbose or args.dry:
-                        print(format_action_message(
-                            operation_mode,
-                            output_filename,
-                            new_filename,
-                            dest_dir,
-                            True,
-                            args.dry,
-                            bool(args.prefix),
-                        ))
+                    if args.verbose or args.dry_run:
+                        print(format_action_message(operation_mode, output_filename, new_filename, dest_dir, True, args.dry_run, bool(args.prefix)))
                 else:
                     failed_count += 1
-                    # if we failed to move the output, no point trying to move inputs
+                    if args.debug_stacks:
+                        print("  - Stack REJECTED: Failed to rename output JPG.")
                     continue
+            
+            if args.lightroomimport:
+                file_date = get_file_date(jpg_record, args.verbose)
+                if file_date:
+                    lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
+                    dest_dir_import = os.path.join(
+                        lightroom_import_base_dir,
+                        str(file_date.year),
+                        file_date.strftime('%Y-%m-%d')
+                    )
+                    ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
+                    
+                    # jpg_record['basename'] is updated if we renamed it above
+                    current_basename = jpg_record['basename']
+                    dest_path = os.path.join(dest_dir_import, current_basename)
+                    
+                    if safe_file_operation("move", jpg_record['path'], dest_path, "moving stacked output", args.force, args.dry_run):
+                        jpg_record.update({'path': dest_path, 'basename': current_basename, 'entry': None})
+                        moved_output_count += 1
+                        if args.verbose or args.dry_run:
+                             print(f"{ 'Would move' if args.dry_run else 'Moved'} stacked output '{current_basename}' to '{dest_dir_import}'")
+                    else:
+                        failed_count += 1
 
-            # If already processed, we don't rename again; rename_ok stays True
-            # and we simply proceed to identify and move the input frames.
-
-
-
-            # If already processed, we don't rename again; rename_ok stays True,
-            # and we proceed to find/move the input frames below.
- 
             numeric_info = output_data.get('numeric')
             if not numeric_info:
+                if args.debug_stacks:
+                    print("  - Stack REJECTED: Output JPG has no numeric stem.")
                 continue
 
             prefix = numeric_info['prefix']
             output_num = numeric_info['num']
             raw_sequence = raw_sequences_by_prefix.get(prefix)
+
+            if args.debug_stacks:
+                print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
+
             if not raw_sequence:
+                if args.debug_stacks:
+                    print("  - Stack REJECTED: No RAW sequence found for this prefix.")
                 continue
 
+            # Find potential input RAWs by scanning backwards from the output's number
             idx = bisect_left(raw_sequence, (output_num, ""))
             if idx == 0:
+                if args.debug_stacks:
+                    print("  - Stack REJECTED: Output is the first in its sequence.")
                 continue
 
             potential_inputs = []
             expected_num = output_num - 1
             current_index = idx - 1
             hit_input_cap = False
+            stop_reason = "None"
+
+            if args.debug_stacks:
+                print("  - Scanning for Input RAWs (backward from output number):")
 
             while current_index >= 0 and len(potential_inputs) < 15:
                 candidate_num, candidate_stem = raw_sequence[current_index]
+                
                 if candidate_num != expected_num:
+                    stop_reason = f"Number mismatch (expected {expected_num}, found {candidate_num})"
+                    if args.debug_stacks:
+                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
+                
                 if candidate_stem in moved_stems:
+                    stop_reason = "Already moved as part of another stack"
+                    if args.debug_stacks:
+                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
+
                 candidate_raw = file_db[candidate_stem]['files'].get('raw')
                 if not candidate_raw:
+                    stop_reason = "No corresponding RAW file found"
+                    if args.debug_stacks:
+                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
 
                 input_mtime = get_file_mtime(candidate_raw, args.verbose)
-                if (
-                    output_mtime is None
-                    or input_mtime is None
-                    or abs((output_mtime - input_mtime).total_seconds()) > MAX_STACK_GAP_SECONDS
-                ):
+                time_gap = abs((output_mtime - input_mtime).total_seconds()) if output_mtime and input_mtime else float('inf')
+
+                if time_gap > MAX_STACK_GAP_SECONDS:
+                    stop_reason = f"Time gap too large ({time_gap:.2f}s > {MAX_STACK_GAP_SECONDS}s)"
+                    if args.debug_stacks:
+                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
 
+                if args.debug_stacks:
+                    print(f"    - Input '{candidate_stem}': ACCEPTED (mtime: {input_mtime}, gap: {time_gap:.2f}s)")
+                
                 potential_inputs.append(candidate_stem)
                 expected_num -= 1
                 current_index -= 1
-                if len(potential_inputs) == 15:
-                    hit_input_cap = True
 
-            # --- SAFETY CHECK: detect focus-bracketing bursts (>15 frames) ---
+            if len(potential_inputs) == 15:
+                hit_input_cap = True
+                if args.debug_stacks:
+                    print("  - Note: Reached 15-frame input cap.")
+
+            # Safety check for focus-bracketing bursts
             too_many_in_burst = False
-            # Only consider it an oversized burst if we actually hit the 15-input cap
-            # and there is another earlier RAW in the same tight time window.
             if potential_inputs and hit_input_cap and current_index >= 0:
                 prev_stem = raw_sequence[current_index][1]
                 prev_raw = file_db[prev_stem]['files'].get('raw')
-                # Get the timestamp of our first (earliest) identified input
-                first_input_stem = potential_inputs[-1]  # last in list = earliest in sequence
-                first_input_raw = file_db[first_input_stem]['files'].get('raw')
-                first_input_mtime = get_file_mtime(first_input_raw, args.verbose) if first_input_raw else None
+                first_input_mtime = get_file_mtime(file_db[potential_inputs[-1]]['files'].get('raw'), args.verbose)
+
                 if prev_raw:
                     prev_mtime = get_file_mtime(prev_raw, args.verbose)
-                    if (
-                        first_input_mtime is not None
-                        and prev_mtime is not None
-                        and abs((first_input_mtime - prev_mtime).total_seconds()) <= MAX_STACK_GAP_SECONDS
-                    ):
+                    if first_input_mtime and prev_mtime and abs((first_input_mtime - prev_mtime).total_seconds()) <= MAX_STACK_GAP_SECONDS:
                         too_many_in_burst = True
-                        if args.verbose:
-                            print(f"Skipping '{output_stem}' - appears to be part of a focus-bracketing burst (>15 frames).")
+                        if args.debug_stacks:
+                            print("  - Burst Safety Check: TRIGGERED. Frame before stack start is too close in time.")
 
-            # Only treat it as a stack if we found 3-15 inputs AND no earlier frames in same burst
-            if (3 <= len(potential_inputs) <= 15) and not too_many_in_burst:
+            # Final decision on the stack
+            is_valid_stack = (3 <= len(potential_inputs) <= 15) and not too_many_in_burst
+            
+            if args.debug_stacks:
+                print(f"  - Final Decision: {'ACCEPTED' if is_valid_stack else 'REJECTED'}")
+                if not (3 <= len(potential_inputs) <= 15):
+                    print(f"    - Reason: Found {len(potential_inputs)} inputs, but requires 3-15.")
+                if too_many_in_burst:
+                    print(f"    - Reason: Burst safety check failed (likely a focus bracket).")
+                print("--- End Debugging Stack ---")
+
+
+            if is_valid_stack:
                 for input_stem in potential_inputs:
                     raw_record = file_db[input_stem]['files'].get('raw')
-                    if not raw_record:
-                        continue
+                    if not raw_record: continue
                     file_date = get_file_date(raw_record, args.verbose)
-                    if file_date is None:
-                        if args.verbose:
-                            print(f"Warning: Could not determine date for '{input_stem}', skipping move.")
+                    if not file_date:
+                        if args.verbose: print(f"Warning: Could not determine date for '{input_stem}', skipping move.")
                         continue
-
-                    lightroom_dest_dir = os.path.join(
-                        LIGHTROOM_BASE_DIR,
-                        str(file_date.year),
-                        file_date.strftime('%Y-%m-%d')
-                    )
-
-                    try:
-                        ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry)
-                    except OSError as e:
-                        print(f"Error creating Lightroom destination directory '{lightroom_dest_dir}': {e}")
-                        failed_count += 1
-                        continue
+                    
+                    moved_stems.add(input_stem)
+                    lightroom_dest_dir = os.path.join(LIGHTROOM_BASE_DIR, str(file_date.year), file_date.strftime('%Y-%m-%d'))
+                    ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry_run)
 
                     for file_type in ['jpg', 'raw']:
                         file_info = file_db[input_stem]['files'].get(file_type)
-                        if not file_info:
-                            continue
-                        src_path = file_info['path']
-                        dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
-                        # Collect move operations instead of executing them immediately
-                        move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir, input_stem))
-
+                        if file_info:
+                            src_path = file_info['path']
+                            dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
+                            move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir, input_stem))
+        
         # --- Execute collected moves ---
-        if move_operations: # Only proceed if there are operations to execute
-            if args.jobs > 1 and not args.dry:
+        if move_operations:
+            if args.jobs > 1 and not args.dry_run:
                 with ThreadPoolExecutor(max_workers=args.jobs) as executor:
                     # Submit all move operations to the thread pool
                     future_to_op = {
                             executor.submit(
-                                safe_file_operation, "move", src, dst, desc, args.force, args.dry
-                                ): (orig_name, ldest, inp_stem)
-                                for src, dst, desc, orig_name, ldest, inp_stem in move_operations
+                                safe_file_operation, "move", src, dst, desc, args.force, args.dry_run
+                            ): (orig_name, ldest, inp_stem)
+                            for src, dst, desc, orig_name, ldest, inp_stem in move_operations
                     }
                     # Process results as they complete
                     for future in future_to_op:
@@ -663,19 +727,61 @@ def main():
                             failed_count += 1
             else:  # Sequential move for single job or dry run
                 for src_path, dest_path, desc, orig_name, ldest, inp_stem in move_operations:
-                    if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry):
+                    if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry_run):
                         moved_input_count += 1
                         moved_stems.add(inp_stem)
-                        if args.verbose or args.dry:
-                            print(f"{'Would move' if args.dry else 'Moved'} input file '{orig_name}' to '{ldest}'")
+                        if args.verbose or args.dry_run:
+                            print(f"{ 'Would move' if args.dry_run else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
                         failed_count += 1 # Count failures from sequential execution
 
 
 
+        if args.lightroomimport is not None:
+            print(f"\n{'DRY RUN: ' if args.dry_run else ''}Lightroom Import: Moving remaining files...")
+            lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
+            
+            all_stems = set(file_db.keys())
+            # Treat both input stems (moved_stems) and stacked outputs as "already handled"
+            processed_stems = moved_stems | stacked_outputs
+            remaining_stems = all_stems - processed_stems
+
+            for stem in sorted(list(remaining_stems)):
+                record = file_db[stem]
+                for file_type in ['jpg', 'raw']:
+                    file_info = record['files'].get(file_type)
+                    if not file_info:
+                        continue
+                    
+                    src_path = file_info['path']
+                    file_date = get_file_date(file_info, args.verbose)
+                    if file_date is None:
+                        if args.verbose:
+                            print(f"Warning: Could not determine date for '{src_path}', skipping import move.")
+                        continue
+
+                    dest_dir_import = os.path.join(
+                        lightroom_import_base_dir,
+                        str(file_date.year),
+                        file_date.strftime('%Y-%m-%d')
+                    )
+
+                    ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
+                    
+                    dest_path = os.path.join(dest_dir_import, file_info['basename'])
+
+                    if safe_file_operation("move", src_path, dest_path, "moving remaining file", args.force, args.dry_run):
+                        remaining_moved_count += 1
+                        if args.verbose or args.dry_run:
+                            print(f"{ 'Would move' if args.dry_run else 'Moved'} remaining file '{file_info['basename']}' to '{dest_dir_import}'")
+                    else:
+                        failed_count += 1
+
+
+
             
     else:
-        use_parallel_copy = operation_mode in {"copy", "stackcopy"} and args.jobs > 1 and not args.dry
+        use_parallel_copy = operation_mode in {"copy", "stackcopy"} and args.jobs > 1 and not args.dry_run
         
         if use_parallel_copy:
             with ThreadPoolExecutor(max_workers=args.jobs) as copy_executor:
@@ -709,7 +815,7 @@ def main():
                             dest_path = os.path.join(dest_dir, new_filename)
                             used_prefix = True
                             future = copy_executor.submit(
-                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry
+                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry_run
                             )
                             pending_copy_jobs.append({
                                 'future': future, 'filename': filename, 'dest_filename': new_filename,
@@ -724,7 +830,7 @@ def main():
                                 new_filename = filename
                                 dest_path = os.path.join(dest_dir, filename)
                             future = copy_executor.submit(
-                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry
+                                safe_file_operation, "copy", jpg_path, dest_path, "copying", args.force, args.dry_run
                             )
                             pending_copy_jobs.append({
                                 'future': future, 'filename': filename, 'dest_filename': new_filename,
@@ -735,18 +841,18 @@ def main():
                     success = False
                     try:
                         success = job['future'].result()
-                        if success: # noqa: BLE001 - top-level CLI error boundary
+                        if success:
                             processed_count += 1
                         else:
                             failed_count += 1
-                    except Exception as e:
+                    except Exception as e: # noqa: BLE001 - top-level CLI error boundary
                         print(f"Error processing '{job['filename']}': {e}")
                         failed_count += 1
                     
-                    if args.verbose or args.dry:
+                    if args.verbose or args.dry_run:
                         message = format_action_message(
                             operation_mode, job['filename'], job['dest_filename'],
-                            job['dest_dir'], success, args.dry, job['used_prefix']
+                            job['dest_dir'], success, args.dry_run, job['used_prefix']
                         )
                         print(message)
 
@@ -781,12 +887,12 @@ def main():
                         new_filename = create_new_filename(name_stem, ext, args.prefix)
                         dest_path = os.path.join(dest_dir, new_filename)
                         used_prefix = bool(args.prefix)
-                        success = safe_file_operation("move", jpg_path, dest_path, "renaming", args.force, args.dry)
+                        success = safe_file_operation("move", jpg_path, dest_path, "renaming", args.force, args.dry_run)
                     elif operation_mode == "stackcopy":
                         new_filename = create_new_filename(name_stem, ext, args.prefix)
                         dest_path = os.path.join(dest_dir, new_filename)
                         used_prefix = True
-                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry)
+                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry_run)
                     elif operation_mode == "copy":
                         if args.prefix:
                             new_filename = create_new_filename(name_stem, ext, args.prefix)
@@ -795,7 +901,7 @@ def main():
                         else:
                             new_filename = filename
                             dest_path = os.path.join(dest_dir, filename)
-                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry)
+                        success = safe_file_operation("copy", jpg_path, dest_path, "copying", args.force, args.dry_run)
 
                     if success is not None:
                         if success:
@@ -803,10 +909,10 @@ def main():
                         else:
                             failed_count += 1
 
-                        if args.verbose or args.dry:
+                        if args.verbose or args.dry_run:
                             message = format_action_message(
                                 operation_mode, filename, os.path.basename(dest_path), 
-                                dest_dir, success, args.dry, used_prefix
+                                dest_dir, success, args.dry_run, used_prefix
                             )
                             print(message)
 
@@ -815,11 +921,11 @@ def main():
     date_info = f" from {target_date}" if target_date else ""
     prefix_info = f" with prefix '{args.prefix}'" if args.prefix else ""
 
-    if args.dry:
+    if args.dry_run:
         # Custom summary for dry-run
         if operation_mode == "rename":
             print(f"\nDRY RUN: Would rename {processed_count} JPG files{prefix_info} without corresponding raw files in '{dest_dir}'.")
-        elif operation_mode == "lightroom":
+        elif operation_mode == "lightroom" or operation_mode == "lightroomimport":
             print(
                 f"\nDRY RUN: Would process {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renaming {processed_count} of them)."
@@ -828,6 +934,15 @@ def main():
                 f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) "
                 f"to '{LIGHTROOM_BASE_DIR}'."
             )
+            if operation_mode == "lightroomimport":
+                print(
+                    f"DRY RUN: Would move {moved_output_count} stacked output files "
+                    f"to '~/pictures/Lightroom'."
+                )
+                print(
+                    f"DRY RUN: Would move {remaining_moved_count} remaining files "
+                    f"to '~/pictures/Lightroom'."
+                )
         elif operation_mode == "stackcopy":
             print(f"\nDRY RUN: Would copy and rename {processed_count} JPG files{prefix_info} without corresponding raw files to the '{dest_dir}' directory.")
         else: # copy mode
@@ -837,7 +952,7 @@ def main():
         # Normal summary
         if operation_mode == "rename":
             print(f"\nDone. Renamed {processed_count} JPG files{prefix_info} without corresponding raw files in '{dest_dir}'.")
-        elif operation_mode == "lightroom":
+        elif operation_mode == "lightroom" or operation_mode == "lightroomimport":
             print(
                 f"\nDone. Processed {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renamed {processed_count})."
@@ -846,6 +961,15 @@ def main():
                 f"Moved {moved_input_count} input files (JPG and ORF) "
                 f"to '{LIGHTROOM_BASE_DIR}'."
             )
+            if operation_mode == "lightroomimport":
+                print(
+                    f"Moved {moved_output_count} stacked output files "
+                    f"to '~/pictures/Lightroom'."
+                )
+                print(
+                    f"Moved {remaining_moved_count} remaining files "
+                    f"to '~/pictures/Lightroom'."
+                )
         elif operation_mode == "stackcopy":
             print(f"\nDone. Copied and renamed {processed_count} JPG files{prefix_info} without corresponding raw files to the '{dest_dir}' directory.")
         else: # copy mode
