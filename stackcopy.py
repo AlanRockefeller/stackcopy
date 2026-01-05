@@ -496,6 +496,8 @@ def main():
 
     if args.lightroom is not None or args.lightroomimport is not None:
         # --- Lightroom Mode ---
+        input_dest_dirs = set()
+        import_dest_dirs = set()
         # Find stacked output files (JPG without ORF)
         stacked_outputs = set()
         for stem, data in file_db.items():
@@ -571,6 +573,7 @@ def main():
                     if safe_file_operation("move", jpg_record['path'], dest_path, "moving stacked output", args.force, args.dry_run):
                         jpg_record.update({'path': dest_path, 'basename': current_basename, 'entry': None})
                         moved_output_count += 1
+                        import_dest_dirs.add(dest_dir_import)
                         if args.verbose or args.dry_run:
                              print(f"{ 'Would move' if args.dry_run else 'Moved'} stacked output '{current_basename}' to '{dest_dir_import}'")
                     else:
@@ -718,6 +721,7 @@ def main():
                                 # Increment counter if successful
                                 moved_input_count += 1
                                 moved_stems.add(inp_stem)
+                                input_dest_dirs.add(ldest)
                                 if args.verbose:
                                     print(f"Moved input file '{orig_name}' to '{ldest}'")
                             else:
@@ -730,6 +734,7 @@ def main():
                     if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry_run):
                         moved_input_count += 1
                         moved_stems.add(inp_stem)
+                        input_dest_dirs.add(ldest)
                         if args.verbose or args.dry_run:
                             print(f"{ 'Would move' if args.dry_run else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
@@ -772,6 +777,7 @@ def main():
 
                     if safe_file_operation("move", src_path, dest_path, "moving remaining file", args.force, args.dry_run):
                         remaining_moved_count += 1
+                        import_dest_dirs.add(dest_dir_import)
                         if args.verbose or args.dry_run:
                             print(f"{ 'Would move' if args.dry_run else 'Moved'} remaining file '{file_info['basename']}' to '{dest_dir_import}'")
                     else:
@@ -930,19 +936,17 @@ def main():
                 f"\nDRY RUN: Would process {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renaming {processed_count} of them)."
             )
-            print(
-                f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) "
-                f"to '{LIGHTROOM_BASE_DIR}'."
-            )
+            print(f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) to:")
+            for d in sorted(input_dest_dirs):
+                print(f"  - {d}")
+            
             if operation_mode == "lightroomimport":
-                print(
-                    f"DRY RUN: Would move {moved_output_count} stacked output files "
-                    f"to '~/pictures/Lightroom'."
-                )
-                print(
-                    f"DRY RUN: Would move {remaining_moved_count} remaining files "
-                    f"to '~/pictures/Lightroom'."
-                )
+                print(f"DRY RUN: Would move {moved_output_count} stacked output files to:")
+                for d in sorted(import_dest_dirs):
+                    print(f"  - {d.replace(os.path.expanduser('~'), '~')}")
+                print(f"DRY RUN: Would move {remaining_moved_count} remaining files to:")
+                for d in sorted(import_dest_dirs):
+                    print(f"  - {d.replace(os.path.expanduser('~'), '~')}")
         elif operation_mode == "stackcopy":
             print(f"\nDRY RUN: Would copy and rename {processed_count} JPG files{prefix_info} without corresponding raw files to the '{dest_dir}' directory.")
         else: # copy mode
@@ -957,19 +961,17 @@ def main():
                 f"\nDone. Processed {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renamed {processed_count})."
             )
-            print(
-                f"Moved {moved_input_count} input files (JPG and ORF) "
-                f"to '{LIGHTROOM_BASE_DIR}'."
-            )
+            print(f"Moved {moved_input_count} input files (JPG and ORF) to:")
+            for d in sorted(input_dest_dirs):
+                print(f"  - {d}")
+
             if operation_mode == "lightroomimport":
-                print(
-                    f"Moved {moved_output_count} stacked output files "
-                    f"to '~/pictures/Lightroom'."
-                )
-                print(
-                    f"Moved {remaining_moved_count} remaining files "
-                    f"to '~/pictures/Lightroom'."
-                )
+                print(f"Moved {moved_output_count} stacked output files to:")
+                for d in sorted(import_dest_dirs):
+                    print(f"  - {d.replace(os.path.expanduser('~'), '~')}")
+                print(f"Moved {remaining_moved_count} remaining files to:")
+                for d in sorted(import_dest_dirs):
+                    print(f"  - {d.replace(os.path.expanduser('~'), '~')}")
         elif operation_mode == "stackcopy":
             print(f"\nDone. Copied and renamed {processed_count} JPG files{prefix_info} without corresponding raw files to the '{dest_dir}' directory.")
         else: # copy mode
