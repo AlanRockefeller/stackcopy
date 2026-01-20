@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.4 by Alan Rockefeller
-# January 4, 2026
+# Stackcopy version 1.5 by Alan Rockefeller
+# January 19, 2026
+
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 
@@ -14,7 +15,8 @@ import argparse
 import re
 import errno
 from bisect import bisect_left
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 
 LIGHTROOM_BASE_DIR = "/home/alan/pictures/olympus.stack.input.photos/"
@@ -47,6 +49,25 @@ def get_file_date(file_record, verbose=False):
     # Calling get_file_mtime will populate both mtime and date
     if get_file_mtime(file_record, verbose):
         return file_record.get('date')
+    return None
+
+def get_stem_mtime(record, verbose=False):
+    """
+    Get the mtime for a stem record, preferring RAW over JPG.
+    Utilizes get_file_mtime to ensure caching and logging.
+    """
+    raw_files = record['files'].get('raw')
+    if raw_files:
+        mtime = get_file_mtime(raw_files, verbose)
+        if mtime:
+            return mtime
+            
+    jpg_files = record['files'].get('jpg')
+    if jpg_files:
+        mtime = get_file_mtime(jpg_files, verbose)
+        if mtime:
+            return mtime
+            
     return None
 
 def create_new_filename(stem, ext, prefix=None):
@@ -476,13 +497,13 @@ def main():
         print(f"Error scanning source directory '{src_dir}': {e}")
         sys.exit(1)
 
-    raw_sequences_by_prefix = {}
+    sequences_by_prefix = {}
     for stem, record in file_db.items():
         numeric_info = record.get('numeric')
-        if numeric_info and record.get('has_raw'):
-            raw_sequences_by_prefix.setdefault(numeric_info['prefix'], []).append((numeric_info['num'], stem))
-    for prefix in raw_sequences_by_prefix:
-        raw_sequences_by_prefix[prefix].sort()
+        if numeric_info and (record.get('has_raw') or record.get('has_jpg')):
+            sequences_by_prefix.setdefault(numeric_info['prefix'], []).append((numeric_info['num'], stem))
+    for prefix in sequences_by_prefix:
+        sequences_by_prefix[prefix].sort()
 
 
     # --- 2. Process files based on operation mode ---
@@ -517,12 +538,25 @@ def main():
 
 
 
-        moved_stems = set()
-        MAX_STACK_GAP_SECONDS = 20
+        claimed_input_stems = set()  # Stems claimed by a stack (to prevent reuse in logic)
+        processed_stems_for_remaining = set() # Stems that have been successfully queued/moved (for "remaining" logic)
+        
+        # MAX_STACK_GAP_SECONDS = 20 # Deprecated, replaced by split thresholds below
+        MAX_OUTPUT_LAG_SECONDS = 120 # Allow time for camera to stack and save (Output -> Input 1)
+        MAX_INPUT_GAP_SECONDS = 6    # Tight gap between consecutive inputs (Input N -> Input N+1)
+        MAX_BURST_GAP_SECONDS = 2.0
+        BURST_EXTRA_FRAMES_REQUIRED = 3
         move_operations = [] # List of (src, dest, description, orig_name_for_logging, dest_dir_for_logging)
+        expected_moves_per_stem = defaultdict(int) # stem -> int count of expected file moves
+        successful_moves_per_stem = defaultdict(int) # stem -> int count of confirmed successful moves
 
 
-        for output_stem in sorted(stacked_outputs):
+        for output_stem in sorted(stacked_outputs, reverse=True):
+            # If this stem was already claimed as an input by a later stack (because we process in reverse),
+            # it cannot be an output.
+            if output_stem in claimed_input_stems:
+                continue
+
             output_data = file_db[output_stem]
             jpg_record = output_data['files'].get('jpg')
             if not jpg_record:
@@ -538,46 +572,8 @@ def main():
                 print(f"\n--- Debugging Stack for Output: {output_filename} ---")
                 print(f"  - Output JPG: '{output_filename}' (mtime: {output_mtime})")
 
-            # Rename the stacked output if not already processed
-            if not is_already_processed(output_filename):
-                stem_only, ext = os.path.splitext(output_filename)
-                new_filename = create_new_filename(stem_only, ext, args.prefix)
-                dest_path = os.path.join(dest_dir, new_filename)
-
-                if safe_file_operation("move", orig_jpg_path, dest_path, "renaming", args.force, args.dry_run):
-                    jpg_record.update({'path': dest_path, 'basename': new_filename, 'entry': None})
-                    processed_count += 1
-                    if args.verbose or args.dry_run:
-                        print(format_action_message(operation_mode, output_filename, new_filename, dest_dir, True, args.dry_run, bool(args.prefix)))
-                else:
-                    failed_count += 1
-                    if args.debug_stacks:
-                        print("  - Stack REJECTED: Failed to rename output JPG.")
-                    continue
-            
-            if args.lightroomimport:
-                file_date = get_file_date(jpg_record, args.verbose)
-                if file_date:
-                    lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
-                    dest_dir_import = os.path.join(
-                        lightroom_import_base_dir,
-                        str(file_date.year),
-                        file_date.strftime('%Y-%m-%d')
-                    )
-                    ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
-                    
-                    # jpg_record['basename'] is updated if we renamed it above
-                    current_basename = jpg_record['basename']
-                    dest_path = os.path.join(dest_dir_import, current_basename)
-                    
-                    if safe_file_operation("move", jpg_record['path'], dest_path, "moving stacked output", args.force, args.dry_run):
-                        jpg_record.update({'path': dest_path, 'basename': current_basename, 'entry': None})
-                        moved_output_count += 1
-                        import_dest_dirs.add(dest_dir_import)
-                        if args.verbose or args.dry_run:
-                             print(f"{ 'Would move' if args.dry_run else 'Moved'} stacked output '{current_basename}' to '{dest_dir_import}'")
-                    else:
-                        failed_count += 1
+            # We defer the output move/rename until AFTER we validate the stack logic.
+            # This matches Requirement B: "Output move must happen only after stack is accepted"
 
             numeric_info = output_data.get('numeric')
             if not numeric_info:
@@ -587,18 +583,18 @@ def main():
 
             prefix = numeric_info['prefix']
             output_num = numeric_info['num']
-            raw_sequence = raw_sequences_by_prefix.get(prefix)
+            sequence = sequences_by_prefix.get(prefix)
 
             if args.debug_stacks:
                 print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
 
-            if not raw_sequence:
+            if not sequence:
                 if args.debug_stacks:
-                    print("  - Stack REJECTED: No RAW sequence found for this prefix.")
+                    print("  - Stack REJECTED: No sequence found for this prefix.")
                 continue
 
             # Find potential input RAWs by scanning backwards from the output's number
-            idx = bisect_left(raw_sequence, (output_num, ""))
+            idx = bisect_left(sequence, (output_num, ""))
             if idx == 0:
                 if args.debug_stacks:
                     print("  - Stack REJECTED: Output is the first in its sequence.")
@@ -611,10 +607,23 @@ def main():
             stop_reason = "None"
 
             if args.debug_stacks:
-                print("  - Scanning for Input RAWs (backward from output number):")
+                print("  - Scanning for Input frames (backward from output number):")
+
+            # Initialize gap checking logic
+            # The gap between the Output file and the first Input file (Input 1) can be large (camera processing time).
+            # The gap between subsequent inputs (Input 1 -> Input 2) must be small (burst speed).
+            prev_mtime = output_mtime
+            if output_mtime is None:
+                if args.debug_stacks:
+                    print("  - Stack REJECTED: Output mtime is missing.")
+                continue
+
+            allowed_gap = MAX_OUTPUT_LAG_SECONDS
+            gap_type = "output_lag"
 
             while current_index >= 0 and len(potential_inputs) < 15:
-                candidate_num, candidate_stem = raw_sequence[current_index]
+                candidate_num, candidate_stem = sequence[current_index]
+                candidate_record = file_db[candidate_stem]
                 
                 if candidate_num != expected_num:
                     stop_reason = f"Number mismatch (expected {expected_num}, found {candidate_num})"
@@ -622,31 +631,54 @@ def main():
                         print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
                 
-                if candidate_stem in moved_stems:
-                    stop_reason = "Already moved as part of another stack"
+                if candidate_stem in claimed_input_stems:
+                    stop_reason = "Already claimed by another stack"
                     if args.debug_stacks:
                         print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
 
-                candidate_raw = file_db[candidate_stem]['files'].get('raw')
-                if not candidate_raw:
-                    stop_reason = "No corresponding RAW file found"
+                # Requirement A: "A stem is eligible if it has jpg OR raw"
+                if not (candidate_record.get('has_raw') or candidate_record.get('has_jpg')):
+                     # This shouldn't happen given how we build sequences, but good safety
+                    stop_reason = "No corresponding RAW or JPG file found"
                     if args.debug_stacks:
                         print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
 
-                input_mtime = get_file_mtime(candidate_raw, args.verbose)
-                time_gap = abs((output_mtime - input_mtime).total_seconds()) if output_mtime and input_mtime else float('inf')
+                # Use get_stem_mtime to robustly get time from RAW or JPG
+                input_mtime = get_stem_mtime(candidate_record, args.verbose)
+                
+                # Determine source for logging - check if we actually got a RAW mtime
+                has_valid_raw_mtime = False
+                if candidate_record.get('has_raw'):
+                     raw_mtime_val = get_file_mtime(candidate_record['files']['raw'], False) # don't verbose log here
+                     if raw_mtime_val:
+                         has_valid_raw_mtime = True
+                
+                mtime_source = "RAW" if has_valid_raw_mtime else "JPG"
 
-                if time_gap > MAX_STACK_GAP_SECONDS:
-                    stop_reason = f"Time gap too large ({time_gap:.2f}s > {MAX_STACK_GAP_SECONDS}s)"
+                # Time Gap Logic with Split Thresholds
+                # Safety: If we don't have valid mtimes, we can't validate the stack timing.
+                if not input_mtime or not prev_mtime:
+                    time_gap = float('inf')
+                else:
+                    time_gap = abs((prev_mtime - input_mtime).total_seconds())
+
+                if time_gap > allowed_gap:
+                    stop_reason = f"Time gap too large ({time_gap:.2f}s > {allowed_gap}s, type: {gap_type})"
                     if args.debug_stacks:
                         print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
                     break
 
                 if args.debug_stacks:
-                    print(f"    - Input '{candidate_stem}': ACCEPTED (mtime: {input_mtime}, gap: {time_gap:.2f}s)")
+                    print(f"    - Input '{candidate_stem}': ACCEPTED (mtime source: {mtime_source}, {gap_type} gap={time_gap:.2f}s <= {allowed_gap}s)")
                 
+                # Update for next iteration
+                # After the first accepted input, we check the gap between inputs, which must be tight.
+                prev_mtime = input_mtime
+                allowed_gap = MAX_INPUT_GAP_SECONDS
+                gap_type = "input_gap"
+
                 potential_inputs.append(candidate_stem)
                 expected_num -= 1
                 current_index -= 1
@@ -656,19 +688,52 @@ def main():
                 if args.debug_stacks:
                     print("  - Note: Reached 15-frame input cap.")
 
-            # Safety check for focus-bracketing bursts
+            # Safety check for focus-bracketing bursts (Requirement C)
+            # Only apply burst safety when we hit the input cap (15 frames)
             too_many_in_burst = False
-            if potential_inputs and hit_input_cap and current_index >= 0:
-                prev_stem = raw_sequence[current_index][1]
-                prev_raw = file_db[prev_stem]['files'].get('raw')
-                first_input_mtime = get_file_mtime(file_db[potential_inputs[-1]]['files'].get('raw'), args.verbose)
+            if potential_inputs and hit_input_cap:
+                # Probe further backward for BURST_EXTRA_FRAMES_REQUIRED additional CONSECUTIVE numbers
+                burst_probe_stems = []
+                probe_index = current_index
+                probe_expected_num = expected_num 
+                
+                # Try to recruit extra frames
+                while probe_index >= 0 and len(burst_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED:
+                    probe_num, probe_stem = sequence[probe_index]
+                    
+                    if probe_num != probe_expected_num:
+                        # Not consecutive, so not part of this burst
+                        break
 
-                if prev_raw:
-                    prev_mtime = get_file_mtime(prev_raw, args.verbose)
-                    if first_input_mtime and prev_mtime and abs((first_input_mtime - prev_mtime).total_seconds()) <= MAX_STACK_GAP_SECONDS:
+                    burst_probe_stems.append(probe_stem)
+                    probe_expected_num -= 1
+                    probe_index -= 1
+                
+                if len(burst_probe_stems) >= BURST_EXTRA_FRAMES_REQUIRED:
+                    # We found enough extra consecutive frames. Now check their timing vs the FIRST input frame.
+                    # potential_inputs is ordered [output-1, output-2 ...], so the "first" (oldest) input is the last element.
+                    first_input_stem = potential_inputs[-1]
+                    first_input_mtime = get_stem_mtime(file_db[first_input_stem], args.verbose)
+                    
+                    # We only care if ALL probe frames are within the tight burst gap
+                    all_in_burst_gap = True
+                    for probe_stem in burst_probe_stems:
+                        probe_mtime = get_stem_mtime(file_db[probe_stem], args.verbose)
+                        # If we can't get mtime, we can't prove it's a burst, so assume safe
+                        if not first_input_mtime or not probe_mtime:
+                            all_in_burst_gap = False
+                            break
+                        
+                        gap = abs((first_input_mtime - probe_mtime).total_seconds())
+                        if gap > MAX_BURST_GAP_SECONDS:
+                            all_in_burst_gap = False
+                            break
+                    
+                    if all_in_burst_gap:
                         too_many_in_burst = True
                         if args.debug_stacks:
-                            print("  - Burst Safety Check: TRIGGERED. Frame before stack start is too close in time.")
+                            print(f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start.")
+
 
             # Final decision on the stack
             is_valid_stack = (3 <= len(potential_inputs) <= 15) and not too_many_in_burst
@@ -683,24 +748,104 @@ def main():
 
 
             if is_valid_stack:
+                # Requirement E: Update claimed_input_stems immediately to prevent reuse
+                # We do this BEFORE attempting the output move. If the output move fails later,
+                # these inputs remain "claimed" internally, effectively binding them to this 
+                # (failed) stack rather than letting them float to a secondary match. This is safer.
                 for input_stem in potential_inputs:
-                    raw_record = file_db[input_stem]['files'].get('raw')
-                    if not raw_record: continue
-                    file_date = get_file_date(raw_record, args.verbose)
-                    if not file_date:
-                        if args.verbose: print(f"Warning: Could not determine date for '{input_stem}', skipping move.")
-                        continue
-                    
-                    moved_stems.add(input_stem)
-                    lightroom_dest_dir = os.path.join(LIGHTROOM_BASE_DIR, str(file_date.year), file_date.strftime('%Y-%m-%d'))
-                    ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry_run)
+                     claimed_input_stems.add(input_stem)
 
-                    for file_type in ['jpg', 'raw']:
-                        file_info = file_db[input_stem]['files'].get(file_type)
-                        if file_info:
-                            src_path = file_info['path']
-                            dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
-                            move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir, input_stem))
+                # --- Execute Output Move/Rename IMMEDIATELY (Requirement B) ---
+                output_move_success = False
+
+                # 1. Rename output to "stacked" in place
+                if not is_already_processed(output_filename):
+                    stem_only, ext = os.path.splitext(output_filename)
+                    new_filename = create_new_filename(stem_only, ext, args.prefix)
+                    dest_path = os.path.join(dest_dir, new_filename)
+
+                    if safe_file_operation("move", orig_jpg_path, dest_path, "renaming", args.force, args.dry_run):
+                        jpg_record.update({'path': dest_path, 'basename': new_filename, 'entry': None})
+                        processed_count += 1
+                        if args.verbose or args.dry_run:
+                            print(format_action_message(operation_mode, output_filename, new_filename, dest_dir, True, args.dry_run, bool(args.prefix)))
+                        output_move_success = True
+                    else:
+                        failed_count += 1
+                        print(f"Error: Failed to rename output file '{output_filename}'")
+                        # If output rename fails, we probably shouldn't move inputs, but practically we can continue if only rename failed.
+                        # But strictly, if we can't rename, the stack state is messy.
+                else:
+                    output_move_success = True # Already renamed
+
+                # 2. Move output to Lightroom import folder (if requested)
+                successfully_moved_output_to_import = False
+                if args.lightroomimport and output_move_success:
+                    file_date = get_file_date(jpg_record, args.verbose)
+                    if file_date:
+                        lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
+                        dest_dir_import = os.path.join(
+                            lightroom_import_base_dir,
+                            str(file_date.year),
+                            file_date.strftime('%Y-%m-%d')
+                        )
+                        ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
+                        
+                        current_basename = jpg_record['basename']
+                        dest_path = os.path.join(dest_dir_import, current_basename)
+                        
+                        if safe_file_operation("move", jpg_record['path'], dest_path, "moving stacked output", args.force, args.dry_run):
+                            jpg_record.update({'path': dest_path, 'basename': current_basename, 'entry': None})
+                            moved_output_count += 1
+                            import_dest_dirs.add(dest_dir_import)
+                            if args.verbose or args.dry_run:
+                                    print(f"{ 'Would move' if args.dry_run else 'Moved'} stacked output '{current_basename}' to '{dest_dir_import}'")
+                            successfully_moved_output_to_import = True
+                        else:
+                            failed_count += 1
+                
+                # Mark output as "processed" for remaining files logic
+                # If lightroomimport: only if import move succeeded.
+                # If lightroom: only if rename succeeded.
+                if args.lightroomimport:
+                    if successfully_moved_output_to_import:
+                        processed_stems_for_remaining.add(output_stem)
+                elif output_move_success:
+                    processed_stems_for_remaining.add(output_stem)
+
+                # --- Queue Input Moves (Only if output move succeeded) ---
+                if output_move_success:
+                    for input_stem in potential_inputs:
+                        raw_record = file_db[input_stem]['files'].get('raw') # Try raw first for date
+                        date_record = raw_record if raw_record else file_db[input_stem]['files'].get('jpg')
+                        if not date_record: continue # Should not happen
+
+                        file_date = get_file_date(date_record, args.verbose)
+                        if not file_date:
+                            if args.verbose: print(f"Warning: Could not determine date for '{input_stem}', skipping move.")
+                            continue
+                        
+                        
+                        lightroom_dest_dir = os.path.join(LIGHTROOM_BASE_DIR, str(file_date.year), file_date.strftime('%Y-%m-%d'))
+                        ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry_run)
+
+                        # Don't mark as processed yet - wait until confirmed success
+                        # processed_stems_for_remaining.add(input_stem)
+
+                        for file_type in ['jpg', 'raw']:
+                            file_info = file_db[input_stem]['files'].get(file_type)
+                            if file_info:
+                                src_path = file_info['path']
+                                # Safety: Verify file exists before queuing to avoid ghost failures
+                                if not os.path.exists(src_path):
+                                    if args.verbose:
+                                        print(f"Warning: File '{src_path}' missing at queue time, skipping.")
+                                    continue
+                                
+                                dest_path = os.path.join(lightroom_dest_dir, file_info['basename'])
+                                move_operations.append((src_path, dest_path, "moving input file", file_info['basename'], lightroom_dest_dir, input_stem))
+                                # Track expected moves for this stem
+                                expected_moves_per_stem[input_stem] += 1
         
         # --- Execute collected moves ---
         if move_operations:
@@ -714,14 +859,16 @@ def main():
                             for src, dst, desc, orig_name, ldest, inp_stem in move_operations
                     }
                     # Process results as they complete
-                    for future in future_to_op:
+                    # Process results as they complete
+                    for future in as_completed(future_to_op):
                         orig_name, ldest, inp_stem = future_to_op[future]
                         try:
                             if future.result():
                                 # Increment counter if successful
                                 moved_input_count += 1
-                                moved_stems.add(inp_stem)
+
                                 input_dest_dirs.add(ldest)
+                                successful_moves_per_stem[inp_stem] += 1
                                 if args.verbose:
                                     print(f"Moved input file '{orig_name}' to '{ldest}'")
                             else:
@@ -733,12 +880,19 @@ def main():
                 for src_path, dest_path, desc, orig_name, ldest, inp_stem in move_operations:
                     if safe_file_operation("move", src_path, dest_path, desc, args.force, args.dry_run):
                         moved_input_count += 1
-                        moved_stems.add(inp_stem)
                         input_dest_dirs.add(ldest)
+                        successful_moves_per_stem[inp_stem] += 1
                         if args.verbose or args.dry_run:
                             print(f"{ 'Would move' if args.dry_run else 'Moved'} input file '{orig_name}' to '{ldest}'")
                     else:
                         failed_count += 1 # Count failures from sequential execution
+
+        # Post-process validation: Only mark input stems as "Processed" if ALL their files moved successfully
+        for stem, expected_count in expected_moves_per_stem.items():
+            if successful_moves_per_stem[stem] == expected_count:
+                processed_stems_for_remaining.add(stem)
+            elif args.verbose:
+                 print(f"Warning: Stem '{stem}' had partial move failure, leaving for 'remaining files' logic.")
 
 
 
@@ -747,8 +901,12 @@ def main():
             lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
             
             all_stems = set(file_db.keys())
-            # Treat both input stems (moved_stems) and stacked outputs as "already handled"
-            processed_stems = moved_stems | stacked_outputs
+            # Treat both successfully moved input stems and accepted output stems as "already handled"
+            # Explicitly do NOT include all 'stacked_outputs' candidates indiscriminately, 
+            # as rejected candidates should be moved as remaining files.
+            
+            # Using our new safely tracked set:
+            processed_stems = processed_stems_for_remaining
             remaining_stems = all_stems - processed_stems
 
             for stem in sorted(list(remaining_stems)):
@@ -759,6 +917,11 @@ def main():
                         continue
                     
                     src_path = file_info['path']
+                    # Safety: If this stem was partially moved (and thus left for remaining logic),
+                    # one of its files might be gone. Skip if missing to avoid spurious errors.
+                    if not os.path.exists(src_path):
+                        continue
+
                     file_date = get_file_date(file_info, args.verbose)
                     if file_date is None:
                         if args.verbose:

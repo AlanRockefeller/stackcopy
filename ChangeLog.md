@@ -1,5 +1,18 @@
 # Change Log
 
+## **[1.5] — 2026-01-19**
+- **Dynamic Stack Detection**:
+  - Implemented dual-threshold logic:
+    - `MAX_OUTPUT_LAG_SECONDS` (120s): Allows time for camera to stack and save (Output -> Input 1).
+    - `MAX_INPUT_GAP_SECONDS` (6s): Enforces tight buffering for subsequent frames (Input N -> Input N+1).
+  - Maintains strict 2.0s burst safety check to reject focus brackets.
+- **Robust Move Tracking**:
+  - Added atomic tracking of "expected" vs "successful" moves per stem.
+  - Stems are only marked as "processed" (and excluded from remaining logic) if *all* constituent files (JPG+RAW) move successfully.
+- **Partial Failure Mitigation**:
+  - Remaining-files logic now gracefully handles missing sources (caused by partial moves) without reporting spurious errors.
+- **Thread Safety**:
+  - Refactored parallel move execution to be fully thread-safe and race-free.
 
 ## **[1.4] — 2026-01-04**
 - Atomic File Operations (_atomic_copy2 function)
