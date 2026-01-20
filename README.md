@@ -22,7 +22,7 @@ Now supports:
 - Debug mode (`--debug-stacks`) for troubleshooting stack detection
 
 ## Installation
-Just grab the script and make it executable:
+Download the script and make it executable:
 
 ```bash
 wget https://raw.githubusercontent.com/AlanRockefeller/stackcopy/main/stackcopy.py
@@ -46,7 +46,7 @@ Here are some real-world scenarios:
 ./stackcopy.py --copy /photos/Lightroom/2025/2025-07-10/ /photos/stacked-images
 ```
 
-### "Just rename them where they are so I know which ones to keep"
+### "Just rename them where they are"
 ```bash
 ./stackcopy.py --rename /photos/Lightroom/2025/2025-07-10/
 ```
@@ -64,7 +64,7 @@ This moves the input files (JPG and ORF) of a stack to a dated folder, and renam
 ```
 
 ### "Complete Lightroom import workflow"
-This does everything: moves stack inputs to dated folders, renames stacked outputs, then imports everything (including the renamed stacks and remaining files) to your Lightroom directory structure.
+This does everything: moves stack inputs to dated folders, renames stacked outputs, then imports everything (including the renamed stacks and remaining files) to your Lightroom directory structure.   Saves stack input images to a separate directory.
 
 ```bash
 ./stackcopy.py --lightroomimport /photos/camera-import/
@@ -93,7 +93,7 @@ Add `--dry` to any command:
 # Creates files like: "IMG_1234 Jackson State Forest stacked.jpg"
 ```
 
-### "Debug why stacks aren't being detected"
+### "Debug why stacks aren't being detected correctly"
 ```bash
 ./stackcopy.py --lightroom /photos/camera-import/ --debug-stacks --dry
 ```
@@ -223,8 +223,8 @@ You went mushroom hunting and want to just copy the stacked photos you took toda
 - In Lightroom Import mode, all files end up in `~/pictures/Lightroom/YEAR/DATE/` organized by date
 
 ## Version Info
-- **Version**: 1.4
-- **Date**: January 4, 2026
+- **Version**: 1.5
+- **Date**: January 19, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
