@@ -1,5 +1,12 @@
 # Change Log
 
+## **[1.5.1] — 2026-01-26**
+
+- Added collision-safe naming for Lightroom/Lightroom Import moves: if a destination filename already exists, Stackcopy appends a shared `__N` suffix (keeps JPG+RAW paired) instead of overwriting.
+- Always prints a brief notice when a rename happens due to a destination collision (even without `--verbose`), usually caused by camera/card counter resets.
+- Improved “remaining files” handling by grouping moves per destination folder and keeping in-memory paths/basenames consistent after moves.
+
+
 ## **[1.5] — 2026-01-19**
 - **Dynamic Stack Detection**:
   - Implemented dual-threshold logic:
