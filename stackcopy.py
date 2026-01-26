@@ -1,9 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5 by Alan Rockefeller
-# January 19, 2026
-
+# Stackcopy version 1.5.1 by Alan Rockefeller
+# January 26, 2026
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 
@@ -14,10 +13,12 @@ import uuid
 import argparse
 import re
 import errno
+from __future__ import annotations
 from bisect import bisect_left
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
+from typing import Any
 
 LIGHTROOM_BASE_DIR = "/home/alan/pictures/olympus.stack.input.photos/"
 # Regex to identify numeric stems for sequence grouping.
@@ -138,6 +139,87 @@ def files_identical(src_path, dest_path, chunk_size=1024 * 1024):
     except OSError:
         # If we can't read either file, treat them as non-identical and let the caller decide.
         return False
+
+
+def add_counter_suffix(basename: str, counter: int) -> str:
+    """
+    Insert a counter suffix before the extension: IMG.JPG -> IMG__2.JPG
+    Counter=1 returns the original basename.
+    """
+    if counter <= 1:
+        return basename
+    stem, ext = os.path.splitext(basename)
+    return f"{stem}__{counter}{ext}"
+
+
+def dest_conflicts(src_path: str, dest_path: str, force: bool) -> bool:
+    """
+    Return True if dest_path exists and we should NOT overwrite it.
+    If contents are identical, it's not a conflict (we treat it as safe).
+    If --force is set, we consider it not a conflict (user explicitly wants overwrite).
+    """
+    if not os.path.exists(dest_path):
+        return False
+    if force:
+        return False
+    # If source exists and is identical to destination, it's safe to treat as non-conflict.
+    if os.path.exists(src_path) and files_identical(src_path, dest_path):
+        return False
+    return True
+
+
+def pick_unique_basenames_for_stem(
+    dest_dir: str,
+    files_by_type: dict[str, Any],
+    force: bool,
+    _dry_run: bool
+) -> tuple[int, dict[str, str]]:
+    """
+    Choose a single counter for *all* files in this stem (e.g., JPG+ORF) so they stay paired.
+    Returns (counter, {file_type: chosen_basename}).
+    Only applies counter suffixing when a destination collision exists and --force is NOT set.
+    """
+    orig = {ft: fi['basename'] for ft, fi in files_by_type.items() if fi}
+    srcs = {ft: fi['path'] for ft, fi in files_by_type.items() if fi}
+
+    # If force is on, do not auto-rename; user asked to overwrite.
+    if force:
+        return 1, orig
+
+    # Try counters starting at 1 until all destinations are non-conflicting.
+    # (Hard cap avoids infinite loops in weird cases.)
+    for counter in range(1, 1000):
+        chosen = {}
+        ok = True
+        for ft, basename in orig.items():
+            candidate_basename = add_counter_suffix(basename, counter)
+            candidate_path = os.path.join(dest_dir, candidate_basename)
+            if dest_conflicts(srcs[ft], candidate_path, force=False):
+                ok = False
+                break
+            chosen[ft] = candidate_basename
+        if ok:
+            return counter, chosen
+
+    # Fallback (extremely unlikely): return the last tried mapping.
+    return 999, {ft: add_counter_suffix(bn, 999) for ft, bn in orig.items()}
+
+
+def print_collision_rename_notice(dest_dir: str, stem_label: str, changes: list[tuple[str, str]], dry_run: bool) -> None:
+    """
+    Always prints (even without --verbose) when we rename due to destination collisions.
+    """
+    if not changes:
+        return
+    verb = "Would rename" if dry_run else "Renaming"
+    why = (
+        "a file with the same name already exists in the destination "
+        "(usually from an earlier import after the camera card counter reset)"
+    )
+    print(f"Note: {verb} files for '{stem_label}' in '{dest_dir}' to avoid overwriting earlier photos ({why})")
+    for old, new in changes:
+        print(f"  - {old} -> {new}")
+
 
 
 def _atomic_copy2(src_path: str, dest_path: str) -> None:
@@ -519,6 +601,8 @@ def main():
         # --- Lightroom Mode ---
         input_dest_dirs = set()
         import_dest_dirs = set()
+        # For printing collision renames only once per stem per destination.
+        collision_notified = set()  # tuples like (dest_dir, stem_label)
         # Find stacked output files (JPG without ORF)
         stacked_outputs = set()
         for stem, data in file_db.items():
@@ -762,13 +846,23 @@ def main():
                 if not is_already_processed(output_filename):
                     stem_only, ext = os.path.splitext(output_filename)
                     new_filename = create_new_filename(stem_only, ext, args.prefix)
-                    dest_path = os.path.join(dest_dir, new_filename)
+                    # Collision-safe in-place rename (rare, but can happen across repeated runs/sessions)
+                    out_files = {'jpg': {'basename': new_filename, 'path': orig_jpg_path}}
+                    counter, chosen = pick_unique_basenames_for_stem(dest_dir, out_files, args.force, args.dry_run)
+                    chosen_name = chosen.get('jpg', new_filename)
+                    dest_path = os.path.join(dest_dir, chosen_name)
+                    if counter > 1:
+                        key = (dest_dir, output_filename)
+                        if key not in collision_notified:
+                            collision_notified.add(key)
+                            print_collision_rename_notice(dest_dir, output_filename,
+                                                          [(new_filename, chosen_name)], args.dry_run)
 
                     if safe_file_operation("move", orig_jpg_path, dest_path, "renaming", args.force, args.dry_run):
-                        jpg_record.update({'path': dest_path, 'basename': new_filename, 'entry': None})
+                        jpg_record.update({'path': dest_path, 'basename': os.path.basename(dest_path), 'entry': None})
                         processed_count += 1
                         if args.verbose or args.dry_run:
-                            print(format_action_message(operation_mode, output_filename, new_filename, dest_dir, True, args.dry_run, bool(args.prefix)))
+                            print(format_action_message(operation_mode, output_filename, os.path.basename(dest_path), dest_dir, True, args.dry_run, bool(args.prefix)))
                         output_move_success = True
                     else:
                         failed_count += 1
@@ -790,16 +884,26 @@ def main():
                             file_date.strftime('%Y-%m-%d')
                         )
                         ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
-                        
+
                         current_basename = jpg_record['basename']
-                        dest_path = os.path.join(dest_dir_import, current_basename)
-                        
+                        # Collision-safe move into Lightroom import folder
+                        out_files = {'jpg': {'basename': current_basename, 'path': jpg_record['path']}}
+                        counter, chosen = pick_unique_basenames_for_stem(dest_dir_import, out_files, args.force, args.dry_run)
+                        chosen_name = chosen.get('jpg', current_basename)
+                        dest_path = os.path.join(dest_dir_import, chosen_name)
+                        if counter > 1:
+                            key = (dest_dir_import, current_basename)
+                            if key not in collision_notified:
+                                collision_notified.add(key)
+                                print_collision_rename_notice(dest_dir_import, current_basename,
+                                                              [(current_basename, chosen_name)], args.dry_run)
+
                         if safe_file_operation("move", jpg_record['path'], dest_path, "moving stacked output", args.force, args.dry_run):
-                            jpg_record.update({'path': dest_path, 'basename': current_basename, 'entry': None})
+                            jpg_record.update({'path': dest_path, 'basename': os.path.basename(dest_path), 'entry': None})
                             moved_output_count += 1
                             import_dest_dirs.add(dest_dir_import)
                             if args.verbose or args.dry_run:
-                                    print(f"{ 'Would move' if args.dry_run else 'Moved'} stacked output '{current_basename}' to '{dest_dir_import}'")
+                                    print(f"{ 'Would move' if args.dry_run else 'Moved'} stacked output '{os.path.basename(dest_path)}' to '{dest_dir_import}'")
                             successfully_moved_output_to_import = True
                         else:
                             failed_count += 1
@@ -828,6 +932,28 @@ def main():
                         
                         lightroom_dest_dir = os.path.join(LIGHTROOM_BASE_DIR, str(file_date.year), file_date.strftime('%Y-%m-%d'))
                         ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry_run)
+
+                        # Collision-safe naming: if destination already has Pxxxxx.JPG/ORF from an earlier import,
+                        # rename both JPG+ORF with a shared __N counter to avoid overwriting.
+                        stem_files = {
+                            'jpg': file_db[input_stem]['files'].get('jpg'),
+                            'raw': file_db[input_stem]['files'].get('raw'),
+                        }
+                        stem_files = {k: v for k, v in stem_files.items() if v}
+                        counter, chosen = pick_unique_basenames_for_stem(lightroom_dest_dir, stem_files, args.force, args.dry_run)
+                        if counter > 1:
+                            changes = []
+                            for ft, fi in stem_files.items():
+                                old = fi['basename']
+                                new = chosen.get(ft, old)
+                                if new != old:
+                                    changes.append((old, new))
+                                    # Update basename so later logic (including remaining-file pass) stays consistent.
+                                    fi['basename'] = new
+                            key = (lightroom_dest_dir, input_stem)
+                            if key not in collision_notified:
+                                collision_notified.add(key)
+                                print_collision_rename_notice(lightroom_dest_dir, input_stem, changes, args.dry_run)
 
                         # Don't mark as processed yet - wait until confirmed success
                         # processed_stems_for_remaining.add(input_stem)
@@ -911,14 +1037,15 @@ def main():
 
             for stem in sorted(list(remaining_stems)):
                 record = file_db[stem]
+                
+                # Group files by their destination directory (usually the same, but safety first)
+                files_by_dest = defaultdict(list)
                 for file_type in ['jpg', 'raw']:
                     file_info = record['files'].get(file_type)
                     if not file_info:
                         continue
                     
                     src_path = file_info['path']
-                    # Safety: If this stem was partially moved (and thus left for remaining logic),
-                    # one of its files might be gone. Skip if missing to avoid spurious errors.
                     if not os.path.exists(src_path):
                         continue
 
@@ -933,21 +1060,39 @@ def main():
                         str(file_date.year),
                         file_date.strftime('%Y-%m-%d')
                     )
+                    files_by_dest[dest_dir_import].append((file_type, file_info))
 
+                # Process moves for each destination directory
+                for dest_dir_import, files in files_by_dest.items():
                     ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
                     
-                    dest_path = os.path.join(dest_dir_import, file_info['basename'])
+                    # Handle collisions once per (stem, destination)
+                    stem_files_for_dest = {ft: fi for ft, fi in files}
+                    counter, chosen = pick_unique_basenames_for_stem(dest_dir_import, stem_files_for_dest, args.force, args.dry_run)
+                    if counter > 1:
+                        changes = []
+                        for ft, fi in stem_files_for_dest.items():
+                            old = fi['basename']
+                            new = chosen.get(ft, old)
+                            if new != old:
+                                changes.append((old, new))
+                                fi['basename'] = new
+                        key = (dest_dir_import, stem)
+                        if key not in collision_notified:
+                            collision_notified.add(key)
+                            print_collision_rename_notice(dest_dir_import, stem, changes, args.dry_run)
 
-                    if safe_file_operation("move", src_path, dest_path, "moving remaining file", args.force, args.dry_run):
-                        remaining_moved_count += 1
-                        import_dest_dirs.add(dest_dir_import)
-                        if args.verbose or args.dry_run:
-                            print(f"{ 'Would move' if args.dry_run else 'Moved'} remaining file '{file_info['basename']}' to '{dest_dir_import}'")
-                    else:
-                        failed_count += 1
-
-
-
+                    for file_type, file_info in files:
+                        dest_path = os.path.join(dest_dir_import, file_info['basename'])
+                        if safe_file_operation("move", file_info['path'], dest_path, "moving remaining file", args.force, args.dry_run):
+                            file_info.update({'path': dest_path, 'basename': os.path.basename(dest_path), 'entry': None})
+                            remaining_moved_count += 1
+                            import_dest_dirs.add(dest_dir_import)
+                            if args.verbose or args.dry_run:
+                                print(f"{ 'Would move' if args.dry_run else 'Moved'} remaining file '{file_info['basename']}' to '{dest_dir_import}'")
+                        else:
+                            failed_count += 1
+                
             
     else:
         use_parallel_copy = operation_mode in {"copy", "stackcopy"} and args.jobs > 1 and not args.dry_run

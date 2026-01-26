@@ -223,8 +223,8 @@ You went mushroom hunting and want to just copy the stacked photos you took toda
 - In Lightroom Import mode, all files end up in `~/pictures/Lightroom/YEAR/DATE/` organized by date
 
 ## Version Info
-- **Version**: 1.5
-- **Date**: January 19, 2026
+- **Version**: 1.5.1
+- **Date**: January 26, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
