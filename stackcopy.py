@@ -254,7 +254,9 @@ def _atomic_copy2(src_path: str, dest_path: str) -> None:
             pass
 
 
-def safe_file_operation(operation, src_path, dest_path, operation_name, force=False, dry_run=False):
+def safe_file_operation(
+    operation, src_path, dest_path, operation_name, force=False, dry_run=False
+):
     # If destination exists and we're not forcing, see if it's identical to the source.
     if os.path.exists(dest_path) and not force:
         # Check self-heal first (applies to both dry-run and real)
@@ -270,11 +272,15 @@ def safe_file_operation(operation, src_path, dest_path, operation_name, force=Fa
             pass
 
         if is_self_heal:
-            msg = "replacing from source" if not dry_run else "would replace from source"
+            msg = (
+                "replacing from source" if not dry_run else "would replace from source"
+            )
             print(f"Note: destination '{dest_path}' exists but is 0 bytes; {msg}.")
             force = True
         elif dry_run:
-            print(f"Warning: '{dest_path}' already exists. Would need --force to overwrite.")
+            print(
+                f"Warning: '{dest_path}' already exists. Would need --force to overwrite."
+            )
             return False
         elif os.path.exists(src_path):
             # If contents are identical, treat this as success.
@@ -342,9 +348,9 @@ def format_bytes(n: int) -> str:
     # Special case for bytes to avoid decimals (e.g. "12 B" not "12.0 B")
     if abs(n) < 1024:
         return f"{int(n)} B"
-    
+
     val = float(n)
-    for unit in ['KiB', 'MiB', 'GiB', 'TiB']:
+    for unit in ["KiB", "MiB", "GiB", "TiB"]:
         if abs(val) < 1024.0:
             return f"{val:3.1f} {unit}"
         val /= 1024.0
@@ -382,7 +388,7 @@ def estimate_required_bytes_for_ops(ops: list[tuple[str, str, str]]) -> dict[int
     ops: list of (src_path, dest_path, op_type) where op_type is 'move' or 'copy'.
     Returns: {device_id: {'bytes': int, 'count': int, 'sample_path': str}}
     """
-    req_map = defaultdict(lambda: {'bytes': 0, 'count': 0, 'sample_path': None})
+    req_map = defaultdict(lambda: {"bytes": 0, "count": 0, "sample_path": None})
 
     for src_path, dest_path, op_type in ops:
         # 1. Get source size and device
@@ -412,10 +418,10 @@ def estimate_required_bytes_for_ops(ops: list[tuple[str, str, str]]) -> dict[int
 
         if writes_to_dest:
             info = req_map[dest_dev]
-            info['bytes'] += src_size
-            info['count'] += 1
-            if info['sample_path'] is None:
-                info['sample_path'] = dest_path
+            info["bytes"] += src_size
+            info["count"] += 1
+            if info["sample_path"] is None:
+                info["sample_path"] = dest_path
 
     return req_map
 
@@ -434,9 +440,9 @@ def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None
         if dev_id in _confirmed_filesystems:
             continue
 
-        req_bytes = info['bytes']
-        count = info['count']
-        sample_path = info['sample_path']
+        req_bytes = info["bytes"]
+        count = info["count"]
+        sample_path = info["sample_path"]
         if not sample_path:
             continue
 
@@ -461,24 +467,30 @@ def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None
 
         if is_low:
             header = "DRY RUN WARNING" if dry_run else "WARNING"
-            print(f"\n{header}: Low disk space detected on destination device for '{sample_path}'")
+            print(
+                f"\n{header}: Low disk space detected on destination device for '{sample_path}'"
+            )
             print(f"  Destination filesystem: {check_path}")
             print(f"  Current free space:     {format_bytes(free_bytes)}")
             print(f"  Required ({count} files):   {format_bytes(req_bytes)}")
 
             if estimated_free < 0:
-                print(f"  Est. free after ops:    {format_bytes(estimated_free)} (OVERFLOW by {format_bytes(-estimated_free)})")
+                print(
+                    f"  Est. free after ops:    {format_bytes(estimated_free)} (OVERFLOW by {format_bytes(-estimated_free)})"
+                )
             else:
                 print(f"  Est. free after ops:    {format_bytes(estimated_free)}")
-            
+
             print(f"  Reserve threshold:      {format_bytes(reserve_bytes)}")
 
             if not sys.stdin.isatty():
-                print("Refusing to proceed: destination space is low and no TTY is available to confirm.")
+                print(
+                    "Refusing to proceed: destination space is low and no TTY is available to confirm."
+                )
                 sys.exit(1)
 
             response = input("  Proceed anyway? [y/N] ").strip().lower()
-            if response not in ('y', 'yes'):
+            if response not in ("y", "yes"):
                 print("Aborted by user.")
                 sys.exit(1)
 
@@ -512,7 +524,9 @@ def format_action_message(
             if dry_run:
                 action = "Would copy and rename"
             else:
-                action = "Copied and renamed" if success else "Failed to copy and rename"
+                action = (
+                    "Copied and renamed" if success else "Failed to copy and rename"
+                )
         else:
             if dry_run:
                 action = "Would copy"
@@ -577,7 +591,9 @@ def main():
     )
 
     # Add date filtering options
-    date_group = parser.add_argument_group("Date Filtering (optional, for copy operations)")
+    date_group = parser.add_argument_group(
+        "Date Filtering (optional, for copy operations)"
+    )
     date_group.add_argument(
         "--today",
         action="store_true",
@@ -620,7 +636,9 @@ def main():
 
     # Add overwrite protection option
     parser.add_argument(
-        "--force", action="store_true", help="Overwrite existing files without prompting"
+        "--force",
+        action="store_true",
+        help="Overwrite existing files without prompting",
     )
 
     # Add debug flag for stack detection
@@ -675,7 +693,9 @@ def main():
         try:
             target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
         except ValueError:
-            print(f"Error: Date format for --date must be YYYY-MM-DD. You provided '{args.date}'.")
+            print(
+                f"Error: Date format for --date must be YYYY-MM-DD. You provided '{args.date}'."
+            )
             sys.exit(1)
 
     # Date filters should only work with copy operations (copy or stackcopy), not rename
@@ -703,7 +723,9 @@ def main():
 
         # Verify that the source directory exists
         if not os.path.isdir(src_dir):
-            print(f"Error: Source directory '{src_dir}' does not exist or is not a directory.")
+            print(
+                f"Error: Source directory '{src_dir}' does not exist or is not a directory."
+            )
             sys.exit(1)
 
         # Check if source and destination are the same
@@ -723,21 +745,29 @@ def main():
 
         # Verify that the specified directory exists
         if not os.path.isdir(work_dir):
-            print(f"Error: Directory '{work_dir}' does not exist or is not a directory.")
+            print(
+                f"Error: Directory '{work_dir}' does not exist or is not a directory."
+            )
             sys.exit(1)
 
         # For rename mode, source and working directory are the same
         src_dir = work_dir
         dest_dir = work_dir  # We're renaming in-place
-    elif args.lightroom is not None or args.lightroomimport is not None:  # --lightroom mode
-        operation_mode = "lightroom" if args.lightroom is not None else "lightroomimport"
+    elif (
+        args.lightroom is not None or args.lightroomimport is not None
+    ):  # --lightroom mode
+        operation_mode = (
+            "lightroom" if args.lightroom is not None else "lightroomimport"
+        )
         work_dir = normalize_path(
             args.lightroom if args.lightroom is not None else args.lightroomimport
         )
 
         # Verify that the specified directory exists
         if not os.path.isdir(work_dir):
-            print(f"Error: Directory '{work_dir}' does not exist or is not a directory.")
+            print(
+                f"Error: Directory '{work_dir}' does not exist or is not a directory."
+            )
             sys.exit(1)
 
         # For lightroom mode, source and working directory are the same
@@ -748,7 +778,9 @@ def main():
         try:
             ensure_directory_once(LIGHTROOM_BASE_DIR, created_dirs, args.dry_run)
         except OSError as e:
-            print(f"Error creating Lightroom base directory '{LIGHTROOM_BASE_DIR}': {e}")
+            print(
+                f"Error creating Lightroom base directory '{LIGHTROOM_BASE_DIR}': {e}"
+            )
             sys.exit(1)
     else:  # --stackcopy mode
         operation_mode = "stackcopy"
@@ -756,7 +788,9 @@ def main():
 
         # Verify that the specified directory exists
         if not os.path.isdir(work_dir):
-            print(f"Error: Directory '{work_dir}' does not exist or is not a directory.")
+            print(
+                f"Error: Directory '{work_dir}' does not exist or is not a directory."
+            )
             sys.exit(1)
 
         # For stackcopy mode, source is the working directory
@@ -812,7 +846,9 @@ def main():
             stem, ext = os.path.splitext(entry.name)
             ext_lower = ext.lower()
 
-            record = file_db.setdefault(stem, {"files": {}, "has_raw": False, "has_jpg": False})
+            record = file_db.setdefault(
+                stem, {"files": {}, "has_raw": False, "has_jpg": False}
+            )
             file_meta = {
                 "path": entry.path,
                 "basename": entry.name,
@@ -884,20 +920,28 @@ def main():
 
                 stacked_outputs.add(stem)
 
-        claimed_input_stems = set()  # Stems claimed by a stack (to prevent reuse in logic)
+        claimed_input_stems = (
+            set()
+        )  # Stems claimed by a stack (to prevent reuse in logic)
         processed_stems_for_remaining = (
             set()
         )  # Stems that have been successfully queued/moved (for "remaining" logic)
 
         # MAX_STACK_GAP_SECONDS = 20 # Deprecated, replaced by split thresholds below
-        MAX_OUTPUT_LAG_SECONDS = 120  # Allow time for camera to stack and save (Output -> Input 1)
-        MAX_INPUT_GAP_SECONDS = 6  # Tight gap between consecutive inputs (Input N -> Input N+1)
+        MAX_OUTPUT_LAG_SECONDS = (
+            120  # Allow time for camera to stack and save (Output -> Input 1)
+        )
+        MAX_INPUT_GAP_SECONDS = (
+            6  # Tight gap between consecutive inputs (Input N -> Input N+1)
+        )
         MAX_BURST_GAP_SECONDS = 2.0
         BURST_EXTRA_FRAMES_REQUIRED = 3
         move_operations = (
             []
         )  # List of (src, dest, description, orig_name_for_logging, dest_dir_for_logging)
-        expected_moves_per_stem = defaultdict(int)  # stem -> int count of expected file moves
+        expected_moves_per_stem = defaultdict(
+            int
+        )  # stem -> int count of expected file moves
         successful_moves_per_stem = defaultdict(
             int
         )  # stem -> int count of confirmed successful moves
@@ -977,25 +1021,31 @@ def main():
                 candidate_record = file_db[candidate_stem]
 
                 if candidate_num != expected_num:
-                    stop_reason = (
-                        f"Number mismatch (expected {expected_num}, found {candidate_num})"
-                    )
+                    stop_reason = f"Number mismatch (expected {expected_num}, found {candidate_num})"
                     if args.debug_stacks:
-                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
+                        print(
+                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                        )
                     break
 
                 if candidate_stem in claimed_input_stems:
                     stop_reason = "Already claimed by another stack"
                     if args.debug_stacks:
-                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
+                        print(
+                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                        )
                     break
 
                 # Requirement A: "A stem is eligible if it has jpg OR raw"
-                if not (candidate_record.get("has_raw") or candidate_record.get("has_jpg")):
+                if not (
+                    candidate_record.get("has_raw") or candidate_record.get("has_jpg")
+                ):
                     # This shouldn't happen given how we build sequences, but good safety
                     stop_reason = "No corresponding RAW or JPG file found"
                     if args.debug_stacks:
-                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
+                        print(
+                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                        )
                     break
 
                 # Use get_stem_mtime to robustly get time from RAW or JPG
@@ -1020,11 +1070,11 @@ def main():
                     time_gap = abs((prev_mtime - input_mtime).total_seconds())
 
                 if time_gap > allowed_gap:
-                    stop_reason = (
-                        f"Time gap too large ({time_gap:.2f}s > {allowed_gap}s, type: {gap_type})"
-                    )
+                    stop_reason = f"Time gap too large ({time_gap:.2f}s > {allowed_gap}s, type: {gap_type})"
                     if args.debug_stacks:
-                        print(f"    - Input '{candidate_stem}': REJECTED ({stop_reason})")
+                        print(
+                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                        )
                     break
 
                 if args.debug_stacks:
@@ -1057,7 +1107,10 @@ def main():
                 probe_expected_num = expected_num
 
                 # Try to recruit extra frames
-                while probe_index >= 0 and len(burst_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED:
+                while (
+                    probe_index >= 0
+                    and len(burst_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED
+                ):
                     probe_num, probe_stem = sequence[probe_index]
 
                     if probe_num != probe_expected_num:
@@ -1072,7 +1125,9 @@ def main():
                     # We found enough extra consecutive frames. Now check their timing vs the FIRST input frame.
                     # potential_inputs is ordered [output-1, output-2 ...], so the "first" (oldest) input is the last element.
                     first_input_stem = potential_inputs[-1]
-                    first_input_mtime = get_stem_mtime(file_db[first_input_stem], args.verbose)
+                    first_input_mtime = get_stem_mtime(
+                        file_db[first_input_stem], args.verbose
+                    )
 
                     # We only care if ALL probe frames are within the tight burst gap
                     all_in_burst_gap = True
@@ -1096,14 +1151,22 @@ def main():
                             )
 
             # Final decision on the stack
-            is_valid_stack = (3 <= len(potential_inputs) <= 15) and not too_many_in_burst
+            is_valid_stack = (
+                3 <= len(potential_inputs) <= 15
+            ) and not too_many_in_burst
 
             if args.debug_stacks:
-                print(f"  - Final Decision: {'ACCEPTED' if is_valid_stack else 'REJECTED'}")
+                print(
+                    f"  - Final Decision: {'ACCEPTED' if is_valid_stack else 'REJECTED'}"
+                )
                 if not (3 <= len(potential_inputs) <= 15):
-                    print(f"    - Reason: Found {len(potential_inputs)} inputs, but requires 3-15.")
+                    print(
+                        f"    - Reason: Found {len(potential_inputs)} inputs, but requires 3-15."
+                    )
                 if too_many_in_burst:
-                    print(f"    - Reason: Burst safety check failed (likely a focus bracket).")
+                    print(
+                        f"    - Reason: Burst safety check failed (likely a focus bracket)."
+                    )
                 print("--- End Debugging Stack ---")
 
             if is_valid_stack:
@@ -1122,7 +1185,9 @@ def main():
                     stem_only, ext = os.path.splitext(output_filename)
                     new_filename = create_new_filename(stem_only, ext, args.prefix)
                     # Collision-safe in-place rename (rare, but can happen across repeated runs/sessions)
-                    out_files = {"jpg": {"basename": new_filename, "path": orig_jpg_path}}
+                    out_files = {
+                        "jpg": {"basename": new_filename, "path": orig_jpg_path}
+                    }
                     counter, chosen = pick_unique_basenames_for_stem(
                         dest_dir, out_files, args.force, args.dry_run
                     )
@@ -1140,7 +1205,12 @@ def main():
                             )
 
                     if safe_file_operation(
-                        "move", orig_jpg_path, dest_path, "renaming", args.force, args.dry_run
+                        "move",
+                        orig_jpg_path,
+                        dest_path,
+                        "renaming",
+                        args.force,
+                        args.dry_run,
                     ):
                         jpg_record.update(
                             {
@@ -1165,7 +1235,9 @@ def main():
                         output_move_success = True
                     else:
                         failed_count += 1
-                        print(f"Error: Failed to rename output file '{output_filename}'")
+                        print(
+                            f"Error: Failed to rename output file '{output_filename}'"
+                        )
                         # If output rename fails, we probably shouldn't move inputs, but practically we can continue if only rename failed.
                         # But strictly, if we can't rename, the stack state is messy.
                 else:
@@ -1176,18 +1248,25 @@ def main():
                 if args.lightroomimport and output_move_success:
                     file_date = get_file_date(jpg_record, args.verbose)
                     if file_date:
-                        lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
+                        lightroom_import_base_dir = os.path.expanduser(
+                            "~/pictures/Lightroom"
+                        )
                         dest_dir_import = os.path.join(
                             lightroom_import_base_dir,
                             str(file_date.year),
                             file_date.strftime("%Y-%m-%d"),
                         )
-                        ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
+                        ensure_directory_once(
+                            dest_dir_import, created_dirs, args.dry_run
+                        )
 
                         current_basename = jpg_record["basename"]
                         # Collision-safe move into Lightroom import folder
                         out_files = {
-                            "jpg": {"basename": current_basename, "path": jpg_record["path"]}
+                            "jpg": {
+                                "basename": current_basename,
+                                "path": jpg_record["path"],
+                            }
                         }
                         counter, chosen = pick_unique_basenames_for_stem(
                             dest_dir_import, out_files, args.force, args.dry_run
@@ -1246,7 +1325,9 @@ def main():
                             "raw"
                         )  # Try raw first for date
                         date_record = (
-                            raw_record if raw_record else file_db[input_stem]["files"].get("jpg")
+                            raw_record
+                            if raw_record
+                            else file_db[input_stem]["files"].get("jpg")
                         )
                         if not date_record:
                             continue  # Should not happen
@@ -1260,9 +1341,13 @@ def main():
                             continue
 
                         lightroom_dest_dir = os.path.join(
-                            LIGHTROOM_BASE_DIR, str(file_date.year), file_date.strftime("%Y-%m-%d")
+                            LIGHTROOM_BASE_DIR,
+                            str(file_date.year),
+                            file_date.strftime("%Y-%m-%d"),
                         )
-                        ensure_directory_once(lightroom_dest_dir, created_dirs, args.dry_run)
+                        ensure_directory_once(
+                            lightroom_dest_dir, created_dirs, args.dry_run
+                        )
 
                         # Collision-safe naming: if destination already has Pxxxxx.JPG/ORF from an earlier import,
                         # rename both JPG+ORF with a shared __N counter to avoid overwriting.
@@ -1287,7 +1372,10 @@ def main():
                             if key not in collision_notified:
                                 collision_notified.add(key)
                                 print_collision_rename_notice(
-                                    lightroom_dest_dir, input_stem, changes, args.dry_run
+                                    lightroom_dest_dir,
+                                    input_stem,
+                                    changes,
+                                    args.dry_run,
                                 )
 
                         # Don't mark as processed yet - wait until confirmed success
@@ -1305,7 +1393,9 @@ def main():
                                         )
                                     continue
 
-                                dest_path = os.path.join(lightroom_dest_dir, file_info["basename"])
+                                dest_path = os.path.join(
+                                    lightroom_dest_dir, file_info["basename"]
+                                )
                                 move_operations.append(
                                     (
                                         src_path,
@@ -1330,7 +1420,13 @@ def main():
                     # Submit all move operations to the thread pool
                     future_to_op = {
                         executor.submit(
-                            safe_file_operation, "move", src, dst, desc, args.force, args.dry_run
+                            safe_file_operation,
+                            "move",
+                            src,
+                            dst,
+                            desc,
+                            args.force,
+                            args.dry_run,
                         ): (orig_name, ldest, inp_stem)
                         for src, dst, desc, orig_name, ldest, inp_stem in move_operations
                     }
@@ -1346,14 +1442,25 @@ def main():
                                 input_dest_dirs.add(ldest)
                                 successful_moves_per_stem[inp_stem] += 1
                                 if args.verbose:
-                                    print(f"Moved input file '{orig_name}' to '{ldest}'")
+                                    print(
+                                        f"Moved input file '{orig_name}' to '{ldest}'"
+                                    )
                             else:
-                                failed_count += 1  # Count failures from parallel execution
+                                failed_count += (
+                                    1  # Count failures from parallel execution
+                                )
                         except Exception as e:
                             print(f"Error moving file '{orig_name}': {e}")
                             failed_count += 1
             else:  # Sequential move for single job or dry run
-                for src_path, dest_path, desc, orig_name, ldest, inp_stem in move_operations:
+                for (
+                    src_path,
+                    dest_path,
+                    desc,
+                    orig_name,
+                    ldest,
+                    inp_stem,
+                ) in move_operations:
                     if safe_file_operation(
                         "move", src_path, dest_path, desc, args.force, args.dry_run
                     ):
@@ -1508,7 +1615,7 @@ def main():
         # Skip for 'rename' mode as it is in-place (same filesystem).
         if operation_mode != "rename":
             ops_check_list = []
-            
+
             for data in file_db.values():
                 if data.get("has_jpg") and not data.get("has_raw"):
                     jpg_record = data["files"].get("jpg")
@@ -1523,24 +1630,24 @@ def main():
                         file_date = get_file_date(jpg_record, args.verbose)
                         if file_date is None or file_date != target_date:
                             continue
-                    
+
                     # Calculate actual destination path
                     dest_filename = filename
                     if operation_mode == "stackcopy" or args.prefix:
                         name_stem, ext = os.path.splitext(filename)
                         dest_filename = create_new_filename(name_stem, ext, args.prefix)
-                    
+
                     dest_path = os.path.join(dest_dir, dest_filename)
 
-                    ops_check_list.append(
-                        (jpg_record["path"], dest_path, "copy")
-                    )
+                    ops_check_list.append((jpg_record["path"], dest_path, "copy"))
 
             confirm_if_low_space(ops_check_list, args.dry_run)
         # --- End pre-flight check ---
 
         use_parallel_copy = (
-            operation_mode in {"copy", "stackcopy"} and args.jobs > 1 and not args.dry_run
+            operation_mode in {"copy", "stackcopy"}
+            and args.jobs > 1
+            and not args.dry_run
         )
 
         if use_parallel_copy:
@@ -1573,7 +1680,9 @@ def main():
                         used_prefix = False
 
                         if operation_mode == "stackcopy":
-                            new_filename = create_new_filename(name_stem, ext, args.prefix)
+                            new_filename = create_new_filename(
+                                name_stem, ext, args.prefix
+                            )
                             dest_path = os.path.join(dest_dir, new_filename)
                             used_prefix = True
                             future = copy_executor.submit(
@@ -1596,7 +1705,9 @@ def main():
                             )
                         elif operation_mode == "copy":
                             if args.prefix:
-                                new_filename = create_new_filename(name_stem, ext, args.prefix)
+                                new_filename = create_new_filename(
+                                    name_stem, ext, args.prefix
+                                )
                                 dest_path = os.path.join(dest_dir, new_filename)
                                 used_prefix = True
                             else:
@@ -1629,7 +1740,9 @@ def main():
                             processed_count += 1
                         else:
                             failed_count += 1
-                    except Exception as e:  # noqa: BLE001 - top-level CLI error boundary
+                    except (
+                        Exception
+                    ) as e:  # noqa: BLE001 - top-level CLI error boundary
                         print(f"Error processing '{job['filename']}': {e}")
                         failed_count += 1
 
@@ -1658,7 +1771,9 @@ def main():
 
                     if is_already_processed(filename):
                         if args.verbose:
-                            print(f"Skipping '{filename}' because it already contains 'stacked'.")
+                            print(
+                                f"Skipping '{filename}' because it already contains 'stacked'."
+                            )
                         skipped_count += 1
                         continue
 
@@ -1677,25 +1792,42 @@ def main():
                         dest_path = os.path.join(dest_dir, new_filename)
                         used_prefix = bool(args.prefix)
                         success = safe_file_operation(
-                            "move", jpg_path, dest_path, "renaming", args.force, args.dry_run
+                            "move",
+                            jpg_path,
+                            dest_path,
+                            "renaming",
+                            args.force,
+                            args.dry_run,
                         )
                     elif operation_mode == "stackcopy":
                         new_filename = create_new_filename(name_stem, ext, args.prefix)
                         dest_path = os.path.join(dest_dir, new_filename)
                         used_prefix = True
                         success = safe_file_operation(
-                            "copy", jpg_path, dest_path, "copying", args.force, args.dry_run
+                            "copy",
+                            jpg_path,
+                            dest_path,
+                            "copying",
+                            args.force,
+                            args.dry_run,
                         )
                     elif operation_mode == "copy":
                         if args.prefix:
-                            new_filename = create_new_filename(name_stem, ext, args.prefix)
+                            new_filename = create_new_filename(
+                                name_stem, ext, args.prefix
+                            )
                             dest_path = os.path.join(dest_dir, new_filename)
                             used_prefix = True
                         else:
                             new_filename = filename
                             dest_path = os.path.join(dest_dir, filename)
                         success = safe_file_operation(
-                            "copy", jpg_path, dest_path, "copying", args.force, args.dry_run
+                            "copy",
+                            jpg_path,
+                            dest_path,
+                            "copying",
+                            args.force,
+                            args.dry_run,
                         )
 
                     if success is not None:
@@ -1731,15 +1863,21 @@ def main():
                 f"\nDRY RUN: Would process {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renaming {processed_count} of them)."
             )
-            print(f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) to:")
+            print(
+                f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) to:"
+            )
             for d in sorted(input_dest_dirs):
                 print(f"  - {d}")
 
             if operation_mode == "lightroomimport":
-                print(f"DRY RUN: Would move {moved_output_count} stacked output files to:")
+                print(
+                    f"DRY RUN: Would move {moved_output_count} stacked output files to:"
+                )
                 for d in sorted(import_dest_dirs):
                     print(f"  - {d.replace(os.path.expanduser('~'), '~')}")
-                print(f"DRY RUN: Would move {remaining_moved_count} remaining files to:")
+                print(
+                    f"DRY RUN: Would move {remaining_moved_count} remaining files to:"
+                )
                 for d in sorted(import_dest_dirs):
                     print(f"  - {d.replace(os.path.expanduser('~'), '~')}")
         elif operation_mode == "stackcopy":
