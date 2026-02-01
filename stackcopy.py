@@ -108,7 +108,7 @@ def ensure_directory_once(path, created_cache, dry_run=False):
 
 def is_already_processed(filename):
     """Check if a file has already been processed (contains 'stacked' as a word)."""
-    stem, ext = os.path.splitext(filename)
+    stem, _ext = os.path.splitext(filename)
     # Use word boundary regex to match 'stacked' as a complete word
     # This will match: "image stacked.jpg", "stacked_image.jpg", "stacked-photo.jpg", etc.
     return bool(re.search(r"\bstacked\b", stem.lower()))
@@ -175,9 +175,7 @@ def dest_conflicts(src_path: str, dest_path: str, force: bool) -> bool:
     if force:
         return False
     # If source exists and is identical to destination, it's safe to treat as non-conflict.
-    if os.path.exists(src_path) and files_identical(src_path, dest_path):
-        return False
-    return True
+    return not (os.path.exists(src_path) and files_identical(src_path, dest_path))
 
 
 def pick_unique_basenames_for_stem(
@@ -411,10 +409,9 @@ def estimate_required_bytes_for_ops(ops: list[tuple[str, str, str]]) -> dict[int
         writes_to_dest = False
         if op_type == "copy":
             writes_to_dest = True
-        elif op_type == "move":
+        elif op_type == "move" and (src_dev is None or src_dev != dest_dev):
             # If we can't determine source device, assume cross-device (safest)
-            if src_dev is None or src_dev != dest_dev:
-                writes_to_dest = True
+            writes_to_dest = True
 
         if writes_to_dest:
             info = req_map[dest_dev]
@@ -672,14 +669,13 @@ def main():
             )
         args.jobs = cpu_count * 2
 
-    if (args.lightroom or args.lightroomimport) and not args.dry_run:
+    if (args.lightroom or args.lightroomimport) and not args.dry_run and args.jobs == 1:
         # If user didn't explicitly request more jobs, pick something sensible
-        if args.jobs == 1:
-            # 4 workers max, but don't exceed 2x CPU cores
-            auto_jobs = min(4, cpu_count * 2)
-            if args.verbose:
-                print(f"Auto-selecting {auto_jobs} worker jobs for Lightroom mode.")
-            args.jobs = auto_jobs
+        # 4 workers max, but don't exceed 2x CPU cores
+        auto_jobs = min(4, cpu_count * 2)
+        if args.verbose:
+            print(f"Auto-selecting {auto_jobs} worker jobs for Lightroom mode.")
+        args.jobs = auto_jobs
 
     created_dirs = set()
 
@@ -730,7 +726,7 @@ def main():
 
         # Check if source and destination are the same
         if paths_are_same(src_dir, dest_dir):
-            print(f"Error: Source and destination directories cannot be the same.")
+            print("Error: Source and destination directories cannot be the same.")
             sys.exit(1)
 
         # Ensure the destination directory exists, create if necessary (but not in dry run)
@@ -1165,7 +1161,7 @@ def main():
                     )
                 if too_many_in_burst:
                     print(
-                        f"    - Reason: Burst safety check failed (likely a focus bracket)."
+                        "    - Reason: Burst safety check failed (likely a focus bracket)."
                     )
                 print("--- End Debugging Stack ---")
 
@@ -1531,7 +1527,7 @@ def main():
             confirm_if_low_space(ops_check_list, args.dry_run)
             # --- End pre-flight check ---
 
-            for stem in sorted(list(remaining_stems)):
+            for stem in sorted(remaining_stems):
                 record = file_db[stem]
 
                 # Group files by their destination directory (usually the same, but safety first)
@@ -1565,7 +1561,7 @@ def main():
                     ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
 
                     # Handle collisions once per (stem, destination)
-                    stem_files_for_dest = {ft: fi for ft, fi in files}
+                    stem_files_for_dest = dict(files)
                     counter, chosen = pick_unique_basenames_for_stem(
                         dest_dir_import, stem_files_for_dest, args.force, args.dry_run
                     )
@@ -1742,7 +1738,7 @@ def main():
                             failed_count += 1
                     except (
                         Exception
-                    ) as e:  # noqa: BLE001 - top-level CLI error boundary
+                    ) as e:
                         print(f"Error processing '{job['filename']}': {e}")
                         failed_count += 1
 
