@@ -1,5 +1,20 @@
 # Change Log
 
+## stackcopy.py [1.5.2] - 2026-01-31
+
+### Added
+- **Pre-flight disk space safety checks** for operations that write to a destination filesystem:
+  - Before executing **cross-device moves** in Lightroom/Lightroom Import modes.
+  - Before moving **“remaining files”** into the Lightroom import directory structure.
+  - Before **copy/stackcopy** operations (including correct destination filename calculation when `--prefix` or `--stackcopy` is used).
+- **User confirmation prompt** when the destination filesystem is low on space, showing:
+  - Current free space, estimated required space for the pending operations, estimated free space after, and a reserve threshold.
+  - “Overflow by X” messaging when the operation would exceed available space.
+- **Filesystem confirmation cache** to avoid prompting repeatedly for the same destination device during a single run.
+
+### Safety
+- If disk space is low and the process is running without an interactive TTY, stackcopy now **refuses to proceed** rather than risking partial transfers.
+
 ## **[1.5.1] — 2026-01-26**
 
 - Added collision-safe naming for Lightroom/Lightroom Import moves: if a destination filename already exists, Stackcopy appends a shared `__N` suffix (keeps JPG+RAW paired) instead of overwriting.
