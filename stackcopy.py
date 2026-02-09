@@ -347,7 +347,7 @@ def format_bytes(n: int) -> str:
     if abs(n) < 1024:
         return f"{int(n)} B"
 
-    val = float(n)
+    val = float(n) / 1024.0
     for unit in ["KiB", "MiB", "GiB", "TiB"]:
         if abs(val) < 1024.0:
             return f"{val:3.1f} {unit}"
