@@ -455,8 +455,8 @@ def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None
         except OSError:
             continue
 
-        # Threshold: max(2 GiB, 5% of total)
-        reserve_bytes = max(2 * 1024**3, int(total_bytes * 0.05))
+        # Threshold: max(2 GiB, 5% of total) capped at 50 GiB for large drives
+        reserve_bytes = max(2 * 1024**3, min(int(total_bytes * 0.05), 50 * 1024**3))
 
         estimated_free = free_bytes - req_bytes
 
