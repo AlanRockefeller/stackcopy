@@ -64,15 +64,15 @@ This moves the input files (JPG and ORF) of a stack to a dated folder, and renam
 ```
 
 ### "Complete Lightroom import workflow"
-This does everything: moves stack inputs to dated folders, renames stacked outputs, then imports everything (including the renamed stacks and remaining files) to your Lightroom directory structure.   Saves stack input images to a separate directory.
+This does everything: detects stacks, plans all moves, shows a summary, then moves everything oldest-first by photo time. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library.
 
 ```bash
 ./stackcopy.py --lightroomimport /photos/camera-import/
 ```
 
-Use 4 parallel workers for faster processing:
+Want to review the plan before it runs? Use interactive mode:
 ```bash
-./stackcopy.py --lightroomimport /photos/camera-import/ --jobs 4
+./stackcopy.py --lightroomimport /photos/camera-import/ -i
 ```
 
 ### "Show me what would happen without actually doing anything"
@@ -106,7 +106,7 @@ Here's what you can do:
 - `--rename [DIR]` - Rename orphaned JPGs in-place (default: current directory)
 - `--stackcopy [DIR]` - Copy to a 'stacked' subfolder with renamed files
 - `--lightroom [DIR]` - Move stack input files to a dated folder and rename stack output files in place
-- `--lightroomimport [DIR]` - Same as `--lightroom`, plus move all remaining files to `~/pictures/Lightroom/YEAR/DATE/`
+- `--lightroomimport [DIR]` - Plans all moves first, then moves files oldest-first by photo time (mtime). Stacked outputs go to `~/pictures/Lightroom/YEAR/DATE/` with a "stacked" suffix, inputs go to a separate dated folder, and remaining files go to `~/pictures/Lightroom/YEAR/DATE/`. Shows a summary before moving.
 
 ### Date Filters (for copy operations):
 - `--today` - Only process files from today
@@ -117,8 +117,9 @@ Here's what you can do:
 - `--prefix PREFIX` - Add a custom prefix before " stacked" in filenames
 - `--dry` or `--dry-run` - Preview what would happen without making changes
 - `-v` or `--verbose` - Show detailed info about each file processed
+- `-i` or `--interactive` - Show a summary and ask for confirmation before moving files (`--lightroomimport` only). Default behavior proceeds automatically.
 - `--force` - Overwrite existing files without asking
-- `--jobs N` - Use N parallel workers for copying/moving (faster on large imports)
+- `--jobs N` - Use N parallel workers for copying/moving (used by `--lightroom`, `--copy`, `--stackcopy`). `--lightroomimport` always runs sequentially to preserve oldest-first order.
 - `--debug-stacks` - Show detailed diagnostic output for stack detection logic
 
 ### Data Integrity & Safety
@@ -170,19 +171,23 @@ You just imported photos from your camera and want to separate the stacked JPGs:
 Import everything from your camera card, organize stacks automatically, and move to your Lightroom library:
 
 ```bash
-# Preview what will happen
+# Preview what will happen (shows the full plan without moving anything)
 ./stackcopy.py --lightroomimport /media/camera-card/ --dry --verbose
 
-# Looks good? Run with 4 parallel workers for speed
-./stackcopy.py --lightroomimport /media/camera-card/ --jobs 4 --verbose
+# Run with interactive confirmation (shows summary, asks before moving)
+./stackcopy.py --lightroomimport /media/camera-card/ -i --verbose
+
+# Or just run it (proceeds automatically after showing the summary)
+./stackcopy.py --lightroomimport /media/camera-card/ --verbose
 ```
 
 This will:
-1. Identify stacked outputs (JPGs without RAWs)
-2. Rename them with " stacked" suffix
-3. Move their input frames (3-15 RAWs) to `/home/alan/pictures/olympus.stack.input.photos/YEAR/DATE/`
-4. Move the renamed stacked outputs to `~/pictures/Lightroom/YEAR/DATE/`
-5. Move all remaining files to `~/pictures/Lightroom/YEAR/DATE/`
+1. Scan all files and detect stacked outputs (JPGs without RAWs)
+2. Plan all moves and show a summary
+3. Move everything oldest-first by photo time:
+   - Stack input frames (3-15 RAWs) to `/home/alan/pictures/olympus.stack.input.photos/YEAR/DATE/`
+   - Stacked outputs (with " stacked" suffix) to `~/pictures/Lightroom/YEAR/DATE/`
+   - All remaining files to `~/pictures/Lightroom/YEAR/DATE/`
 
 ### Scenario 3: Troubleshoot Stack Detection
 If stacks aren't being detected correctly, use debug mode:
@@ -217,14 +222,14 @@ You went mushroom hunting and want to just copy the stacked photos you took toda
 - Files already containing " stacked" are automatically skipped
 - You can run the script multiple times safely - it won't double-process files
 - The date filters use file modification time (most reliable across platforms)
-- Use `--jobs 4` or higher for faster processing of large imports (in Lightroom modes or copy operations)
+- Use `--jobs 4` or higher for faster processing in `--lightroom`, `--copy`, or `--stackcopy` modes
 - If operations are interrupted, just re-run - the self-healing logic will fix any incomplete files
 - Use `--debug-stacks` with `--dry` to understand why certain photo sequences aren't being treated as stacks
 - In Lightroom Import mode, all files end up in `~/pictures/Lightroom/YEAR/DATE/` organized by date
 
 ## Version Info
-- **Version**: 1.5.1
-- **Date**: January 26, 2026
+- **Version**: 1.5.3
+- **Date**: March 26, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
