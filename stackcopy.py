@@ -1442,7 +1442,7 @@ def main():
         print(f"  Rejected stack candidates:     {total_rejected}")
 
         if args.debug_stacks and total_rejected > 0:
-            print(f"    Rejection breakdown:")
+            print("    Rejection breakdown:")
             if rejected_no_numeric_stem:
                 print(f"      No numeric stem:           {rejected_no_numeric_stem}")
             if rejected_no_sequence:

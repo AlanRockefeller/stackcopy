@@ -12,7 +12,7 @@
 - The summary now reports accepted and rejected stack counts, file counts by category, time range, and destination directories.
 - Rejection breakdown available with `--debug-stacks`.
 
-## **[1.5.2] - 2026-01-31
+## **[1.5.2] — 2026-01-31**
 
 ### Added
 - **Pre-flight disk space safety checks** for operations that write to a destination filesystem:
@@ -109,7 +109,7 @@ Very helpful for troubleshooting stack detection issues
 The --lightroom mode includes a safety check to skip moving input files when it detects a focus-bracketing burst longer than 15 frames. This check was incorrectly comparing the stacked output file's timestamp against raw files from a previous, unrelated stack. When two separate stacks were shot within 20 seconds of each other, the script would mistakenly conclude they were part of one giant burst and skip moving the input files for the second stack.
 The fix changes the burst detection to compare timestamps between consecutive raw files rather than between the output and earlier raw files. This correctly identifies actual continuous bursts while allowing separate stacks shot in quick succession to be processed independently.
 
-## Version 1.1 - 2025-10-30
+## **[1.1] — 2025-10-30**
 
 ### Added
 
@@ -118,3 +118,4 @@ The fix changes the burst detection to compare timestamps between consecutive ra
 - Moves the input files (both JPG and ORF) of identified stacks to a dated directory structure (e.g., `/home/alan/pictures/olympus.stack.input.photos/2025/2025-10-30/`).
 - Renames the stacked output JPG in its original directory.
 - Single-shot photos and focus bracketed photos (JPG/ORF pairs not part of a stack) are left untouched.
+.
