@@ -195,12 +195,20 @@ def dest_conflicts(src_path: str, dest_path: str, force: bool) -> bool:
 
 
 def pick_unique_basenames_for_stem(
-    dest_dir: str, files_by_type: dict[str, Any], force: bool, _dry_run: bool
+    dest_dir: str,
+    files_by_type: dict[str, Any],
+    force: bool,
+    _dry_run: bool,
+    reserved_paths: set[str] | None = None,
 ) -> tuple[int, dict[str, str]]:
     """
     Choose a single counter for *all* files in this stem (e.g., JPG+ORF) so they stay paired.
     Returns (counter, {file_type: chosen_basename}).
     Only applies counter suffixing when a destination collision exists and --force is NOT set.
+
+    reserved_paths: optional set of destination paths already claimed by earlier planned
+    moves (used by --lightroomimport plan-then-execute to avoid two planned moves
+    targeting the same path).
     """
     orig = {ft: fi["basename"] for ft, fi in files_by_type.items() if fi}
     srcs = {ft: fi["path"] for ft, fi in files_by_type.items() if fi}
@@ -218,6 +226,9 @@ def pick_unique_basenames_for_stem(
             candidate_basename = add_counter_suffix(basename, counter)
             candidate_path = os.path.join(dest_dir, candidate_basename)
             if dest_conflicts(srcs[ft], candidate_path, force=False):
+                ok = False
+                break
+            if reserved_paths and candidate_path in reserved_paths:
                 ok = False
                 break
             chosen[ft] = candidate_basename
@@ -933,6 +944,7 @@ def main():
         # ================================================================
 
         collision_notified = set()
+        reserved_dest_paths: set[str] = set()
         lightroom_import_base_dir = os.path.expanduser("~/pictures/Lightroom")
 
         # --- Phase A: Detection and Planning ---
@@ -1205,7 +1217,8 @@ def main():
                     "jpg": {"basename": dest_basename, "path": orig_jpg_path}
                 }
                 counter, chosen = pick_unique_basenames_for_stem(
-                    dest_dir_import, out_files, args.force, args.dry_run
+                    dest_dir_import, out_files, args.force, args.dry_run,
+                    reserved_paths=reserved_dest_paths,
                 )
                 chosen_name = chosen.get("jpg", dest_basename)
                 if counter > 1:
@@ -1219,9 +1232,11 @@ def main():
                             args.dry_run,
                         )
 
+                dest_path = os.path.join(dest_dir_import, chosen_name)
+                reserved_dest_paths.add(dest_path)
                 planned_moves.append(PlannedMove(
                     src_path=orig_jpg_path,
-                    dest_path=os.path.join(dest_dir_import, chosen_name),
+                    dest_path=dest_path,
                     category="stack_output",
                     stem=output_stem,
                     file_type="jpg",
@@ -1271,7 +1286,8 @@ def main():
                 }
                 stem_files = {k: v for k, v in stem_files.items() if v}
                 counter, chosen = pick_unique_basenames_for_stem(
-                    lightroom_dest_dir, stem_files, args.force, args.dry_run
+                    lightroom_dest_dir, stem_files, args.force, args.dry_run,
+                    reserved_paths=reserved_dest_paths,
                 )
                 if counter > 1:
                     changes = []
@@ -1306,9 +1322,11 @@ def main():
                         continue
 
                     input_mtime_val = get_file_mtime(file_info, args.verbose)
+                    dest_path = os.path.join(lightroom_dest_dir, file_info["basename"])
+                    reserved_dest_paths.add(dest_path)
                     planned_moves.append(PlannedMove(
                         src_path=src_path,
-                        dest_path=os.path.join(lightroom_dest_dir, file_info["basename"]),
+                        dest_path=dest_path,
                         category="stack_input",
                         stem=input_stem,
                         file_type=file_type,
@@ -1359,7 +1377,8 @@ def main():
             for dest_dir_import, files in files_by_dest.items():
                 stem_files_for_dest = dict(files)
                 counter, chosen = pick_unique_basenames_for_stem(
-                    dest_dir_import, stem_files_for_dest, args.force, args.dry_run
+                    dest_dir_import, stem_files_for_dest, args.force, args.dry_run,
+                    reserved_paths=reserved_dest_paths,
                 )
                 if counter > 1:
                     changes = []
@@ -1378,9 +1397,11 @@ def main():
 
                 for ft, file_info in files:
                     file_mtime_val = get_file_mtime(file_info, args.verbose)
+                    dest_path = os.path.join(dest_dir_import, file_info["basename"])
+                    reserved_dest_paths.add(dest_path)
                     planned_moves.append(PlannedMove(
                         src_path=file_info["path"],
-                        dest_path=os.path.join(dest_dir_import, file_info["basename"]),
+                        dest_path=dest_path,
                         category="remaining",
                         stem=stem,
                         file_type=ft,
@@ -1479,6 +1500,15 @@ def main():
                     print("Please type y or n.")
 
         # --- Phase F: Execute moves sequentially ---
+        # Track per-stem success for non-remaining moves so we can detect
+        # stems where every planned move failed and recover them as remaining.
+        expected_per_stem: dict[str, int] = defaultdict(int)
+        succeeded_per_stem: dict[str, int] = defaultdict(int)
+
+        for move in planned_moves:
+            if move.category != "remaining":
+                expected_per_stem[move.stem] += 1
+
         for move in planned_moves:
             ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
 
@@ -1493,8 +1523,10 @@ def main():
                 if move.category == "stack_output":
                     moved_output_count += 1
                     processed_count += 1
+                    succeeded_per_stem[move.stem] += 1
                 elif move.category == "stack_input":
                     moved_input_count += 1
+                    succeeded_per_stem[move.stem] += 1
                 elif move.category == "remaining":
                     remaining_moved_count += 1
 
@@ -1511,6 +1543,85 @@ def main():
                         )
             else:
                 failed_count += 1
+
+        # --- Phase G: Recovery pass for stems with total move failure ---
+        # If every planned non-remaining move for a stem failed, that stem's
+        # files are still in the source directory.  Move them as remaining
+        # files so nothing is silently stranded.
+        recovery_stems: set[str] = set()
+        for stem, expected in expected_per_stem.items():
+            succeeded = succeeded_per_stem[stem]
+            if succeeded == 0 and expected > 0:
+                recovery_stems.add(stem)
+            elif 0 < succeeded < expected and args.verbose:
+                print(
+                    f"Warning: Stem '{stem}' had partial move failure ({succeeded}/{expected} succeeded)."
+                )
+
+        if recovery_stems:
+            if args.verbose:
+                print(
+                    f"\nRecovering {len(recovery_stems)} stem(s) whose planned moves all failed..."
+                )
+            for stem in recovery_stems:
+                record = file_db[stem]
+                files_by_dest: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+                for file_type in ["jpg", "raw"]:
+                    file_info = record["files"].get(file_type)
+                    if not file_info:
+                        continue
+                    src_path = file_info["path"]
+                    if not os.path.exists(src_path):
+                        continue
+                    file_date = get_file_date(file_info, args.verbose)
+                    if file_date is None:
+                        continue
+                    dest_dir_import = os.path.join(
+                        lightroom_import_base_dir,
+                        str(file_date.year),
+                        file_date.strftime("%Y-%m-%d"),
+                    )
+                    files_by_dest[dest_dir_import].append((file_type, file_info))
+
+                for dest_dir_import, files in files_by_dest.items():
+                    ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
+                    stem_files_for_dest = dict(files)
+                    counter, chosen = pick_unique_basenames_for_stem(
+                        dest_dir_import, stem_files_for_dest, args.force, args.dry_run,
+                    )
+                    if counter > 1:
+                        changes = []
+                        for ft, fi in stem_files_for_dest.items():
+                            old = fi["basename"]
+                            new = chosen.get(ft, old)
+                            if new != old:
+                                changes.append((old, new))
+                                fi["basename"] = new
+                        print_collision_rename_notice(
+                            dest_dir_import, stem, changes, args.dry_run
+                        )
+
+                    for ft, file_info in files:
+                        dest_path = os.path.join(dest_dir_import, file_info["basename"])
+                        if safe_file_operation(
+                            "move",
+                            file_info["path"],
+                            dest_path,
+                            "moving recovered remaining file",
+                            args.force,
+                            args.dry_run,
+                        ):
+                            remaining_moved_count += 1
+                            if args.verbose or args.dry_run:
+                                verb = "Would move" if args.dry_run else "Moved"
+                                dest_short = dest_dir_import.replace(
+                                    os.path.expanduser("~"), "~"
+                                )
+                                print(
+                                    f"{verb} remaining '{file_info['basename']}' -> '{dest_short}'"
+                                )
+                        else:
+                            failed_count += 1
 
     elif args.lightroom is not None:
         # ================================================================
