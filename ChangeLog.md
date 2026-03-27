@@ -1,6 +1,18 @@
 # Change Log
 
-## stackcopy.py [1.5.2] - 2026-01-31
+## **1.5.3 - 2026-03-26
+
+### Changed
+- `--lightroomimport` now plans all moves first, then moves files oldest-first by photo time (mtime). This replaces the previous approach where moves happened during detection.
+- `--lightroomimport` always runs sequentially (ignores `--jobs`) to guarantee oldest-first ordering.
+- The summary now prints before any files are moved, showing what was found and what will happen.
+
+### Added
+- `-i` / `--interactive` flag: shows a summary and asks for confirmation before moving files. Only applies to `--lightroomimport`. Default behavior still proceeds automatically.
+- The summary now reports accepted and rejected stack counts, file counts by category, time range, and destination directories.
+- Rejection breakdown available with `--debug-stacks`.
+
+## **[1.5.2] - 2026-01-31
 
 ### Added
 - **Pre-flight disk space safety checks** for operations that write to a destination filesystem:
