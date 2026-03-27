@@ -42,7 +42,9 @@ class PlannedMove:
     file_type: str  # "jpg" or "raw"
     mtime: datetime | None
     basename_orig: str  # original filename
-    basename_dest: str  # destination filename (may include "stacked" rename + collision suffix)
+    basename_dest: (
+        str  # destination filename (may include "stacked" rename + collision suffix)
+    )
     dest_dir: str
 
 
@@ -1213,11 +1215,12 @@ def main():
                     dest_basename = output_filename
 
                 # Collision-safe naming against the final destination
-                out_files = {
-                    "jpg": {"basename": dest_basename, "path": orig_jpg_path}
-                }
+                out_files = {"jpg": {"basename": dest_basename, "path": orig_jpg_path}}
                 counter, chosen = pick_unique_basenames_for_stem(
-                    dest_dir_import, out_files, args.force, args.dry_run,
+                    dest_dir_import,
+                    out_files,
+                    args.force,
+                    args.dry_run,
                     reserved_paths=reserved_dest_paths,
                 )
                 chosen_name = chosen.get("jpg", dest_basename)
@@ -1234,17 +1237,19 @@ def main():
 
                 dest_path = os.path.join(dest_dir_import, chosen_name)
                 reserved_dest_paths.add(dest_path)
-                planned_moves.append(PlannedMove(
-                    src_path=orig_jpg_path,
-                    dest_path=dest_path,
-                    category="stack_output",
-                    stem=output_stem,
-                    file_type="jpg",
-                    mtime=output_mtime,
-                    basename_orig=output_filename,
-                    basename_dest=chosen_name,
-                    dest_dir=dest_dir_import,
-                ))
+                planned_moves.append(
+                    PlannedMove(
+                        src_path=orig_jpg_path,
+                        dest_path=dest_path,
+                        category="stack_output",
+                        stem=output_stem,
+                        file_type="jpg",
+                        mtime=output_mtime,
+                        basename_orig=output_filename,
+                        basename_dest=chosen_name,
+                        dest_dir=dest_dir_import,
+                    )
+                )
                 processed_stems_for_remaining.add(output_stem)
             else:
                 skipped_missing_date += 1
@@ -1286,7 +1291,10 @@ def main():
                 }
                 stem_files = {k: v for k, v in stem_files.items() if v}
                 counter, chosen = pick_unique_basenames_for_stem(
-                    lightroom_dest_dir, stem_files, args.force, args.dry_run,
+                    lightroom_dest_dir,
+                    stem_files,
+                    args.force,
+                    args.dry_run,
                     reserved_paths=reserved_dest_paths,
                 )
                 if counter > 1:
@@ -1324,17 +1332,19 @@ def main():
                     input_mtime_val = get_file_mtime(file_info, args.verbose)
                     dest_path = os.path.join(lightroom_dest_dir, file_info["basename"])
                     reserved_dest_paths.add(dest_path)
-                    planned_moves.append(PlannedMove(
-                        src_path=src_path,
-                        dest_path=dest_path,
-                        category="stack_input",
-                        stem=input_stem,
-                        file_type=file_type,
-                        mtime=input_mtime_val,
-                        basename_orig=file_info["basename"],
-                        basename_dest=file_info["basename"],
-                        dest_dir=lightroom_dest_dir,
-                    ))
+                    planned_moves.append(
+                        PlannedMove(
+                            src_path=src_path,
+                            dest_path=dest_path,
+                            category="stack_input",
+                            stem=input_stem,
+                            file_type=file_type,
+                            mtime=input_mtime_val,
+                            basename_orig=file_info["basename"],
+                            basename_dest=file_info["basename"],
+                            dest_dir=lightroom_dest_dir,
+                        )
+                    )
                     planned_any = True
 
                 if planned_any:
@@ -1377,7 +1387,10 @@ def main():
             for dest_dir_import, files in files_by_dest.items():
                 stem_files_for_dest = dict(files)
                 counter, chosen = pick_unique_basenames_for_stem(
-                    dest_dir_import, stem_files_for_dest, args.force, args.dry_run,
+                    dest_dir_import,
+                    stem_files_for_dest,
+                    args.force,
+                    args.dry_run,
                     reserved_paths=reserved_dest_paths,
                 )
                 if counter > 1:
@@ -1399,17 +1412,19 @@ def main():
                     file_mtime_val = get_file_mtime(file_info, args.verbose)
                     dest_path = os.path.join(dest_dir_import, file_info["basename"])
                     reserved_dest_paths.add(dest_path)
-                    planned_moves.append(PlannedMove(
-                        src_path=file_info["path"],
-                        dest_path=dest_path,
-                        category="remaining",
-                        stem=stem,
-                        file_type=ft,
-                        mtime=file_mtime_val,
-                        basename_orig=file_info["basename"],
-                        basename_dest=file_info["basename"],
-                        dest_dir=dest_dir_import,
-                    ))
+                    planned_moves.append(
+                        PlannedMove(
+                            src_path=file_info["path"],
+                            dest_path=dest_path,
+                            category="remaining",
+                            stem=stem,
+                            file_type=ft,
+                            mtime=file_mtime_val,
+                            basename_orig=file_info["basename"],
+                            basename_dest=file_info["basename"],
+                            dest_dir=dest_dir_import,
+                        )
+                    )
 
         # --- Phase B: Disk space preflight (unified) ---
         if planned_moves:
@@ -1422,13 +1437,19 @@ def main():
         )
 
         # --- Phase D: Print summary ---
-        planned_output_count = sum(1 for m in planned_moves if m.category == "stack_output")
-        planned_input_count = sum(1 for m in planned_moves if m.category == "stack_input")
-        planned_remaining_count = sum(1 for m in planned_moves if m.category == "remaining")
+        planned_output_count = sum(
+            1 for m in planned_moves if m.category == "stack_output"
+        )
+        planned_input_count = sum(
+            1 for m in planned_moves if m.category == "stack_input"
+        )
+        planned_remaining_count = sum(
+            1 for m in planned_moves if m.category == "remaining"
+        )
         total_rejected = stack_outputs_seen - accepted_stacks
-        all_dest_dirs = sorted(set(
-            m.dest_dir.replace(os.path.expanduser("~"), "~") for m in planned_moves
-        ))
+        all_dest_dirs = sorted(
+            set(m.dest_dir.replace(os.path.expanduser("~"), "~") for m in planned_moves)
+        )
 
         verb = "Would move" if args.dry_run else "Will move"
         dry_prefix = "DRY RUN: " if args.dry_run else ""
@@ -1587,7 +1608,10 @@ def main():
                     ensure_directory_once(dest_dir_import, created_dirs, args.dry_run)
                     stem_files_for_dest = dict(files)
                     counter, chosen = pick_unique_basenames_for_stem(
-                        dest_dir_import, stem_files_for_dest, args.force, args.dry_run,
+                        dest_dir_import,
+                        stem_files_for_dest,
+                        args.force,
+                        args.dry_run,
                     )
                     if counter > 1:
                         changes = []
@@ -2188,9 +2212,7 @@ def main():
                             processed_count += 1
                         else:
                             failed_count += 1
-                    except (
-                        Exception
-                    ) as e:
+                    except Exception as e:
                         print(f"Error processing '{job['filename']}': {e}")
                         failed_count += 1
 
@@ -2307,7 +2329,9 @@ def main():
         if args.dry_run:
             print(f"DRY RUN complete. {total_moved} files would be moved.")
         else:
-            print(f"Done. Moved {total_moved} files ({moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining).")
+            print(
+                f"Done. Moved {total_moved} files ({moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining)."
+            )
     elif args.dry_run:
         # Custom summary for dry-run
         if operation_mode == "rename":
