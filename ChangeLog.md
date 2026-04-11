@@ -1,13 +1,21 @@
 # Change Log
 
-## **1.5.3 - 2026-03-26
+## \*\*1.5.4 - 2026-04-10
+
+- Improved Windows support.
+- Warn the user of slow speeds if using WSL across drives.
+- Show transfer speeds in the summary line.
+
+## \*\*1.5.3 - 2026-03-26
 
 ### Changed
+
 - `--lightroomimport` now plans all moves first, then moves files oldest-first by photo time (mtime). This replaces the previous approach where moves happened during detection.
 - `--lightroomimport` always runs sequentially (ignores `--jobs`) to guarantee oldest-first ordering.
 - The summary now prints before any files are moved, showing what was found and what will happen.
 
 ### Added
+
 - `-i` / `--interactive` flag: shows a summary and asks for confirmation before moving files. Only applies to `--lightroomimport`. Default behavior still proceeds automatically.
 - The summary now reports accepted and rejected stack counts, file counts by category, time range, and destination directories.
 - Rejection breakdown available with `--debug-stacks`.
@@ -15,6 +23,7 @@
 ## **[1.5.2] — 2026-01-31**
 
 ### Added
+
 - **Pre-flight disk space safety checks** for operations that write to a destination filesystem:
   - Before executing **cross-device moves** in Lightroom/Lightroom Import modes.
   - Before moving **“remaining files”** into the Lightroom import directory structure.
@@ -25,6 +34,7 @@
 - **Filesystem confirmation cache** to avoid prompting repeatedly for the same destination device during a single run.
 
 ### Safety
+
 - If disk space is low and the process is running without an interactive TTY, stackcopy now **refuses to proceed** rather than risking partial transfers.
 
 ## **[1.5.1] — 2026-01-26**
@@ -33,8 +43,8 @@
 - Always prints a brief notice when a rename happens due to a destination collision (even without `--verbose`), usually caused by camera/card counter resets.
 - Improved “remaining files” handling by grouping moves per destination folder and keeping in-memory paths/basenames consistent after moves.
 
-
 ## **[1.5] — 2026-01-19**
+
 - **Dynamic Stack Detection**:
   - Implemented dual-threshold logic:
     - `MAX_OUTPUT_LAG_SECONDS` (120s): Allows time for camera to stack and save (Output -> Input 1).
@@ -42,19 +52,19 @@
   - Maintains strict 2.0s burst safety check to reject focus brackets.
 - **Robust Move Tracking**:
   - Added atomic tracking of "expected" vs "successful" moves per stem.
-  - Stems are only marked as "processed" (and excluded from remaining logic) if *all* constituent files (JPG+RAW) move successfully.
+  - Stems are only marked as "processed" (and excluded from remaining logic) if _all_ constituent files (JPG+RAW) move successfully.
 - **Partial Failure Mitigation**:
   - Remaining-files logic now gracefully handles missing sources (caused by partial moves) without reporting spurious errors.
 - **Thread Safety**:
   - Refactored parallel move execution to be fully thread-safe and race-free.
 
 ## **[1.4] — 2026-01-04**
-- Atomic File Operations (_atomic_copy2 function)
+
+- Atomic File Operations (\_atomic_copy2 function)
 
 Implements atomic copy by writing to a temporary file first, then using os.replace() to atomically swap it with the destination
 Prevents partial/corrupted files if operations are interrupted
 Includes cleanup of temp files in case of errors
-
 
 - New --lightroomimport Mode
 
@@ -62,13 +72,11 @@ Extends --lightroom functionality to also move remaining non-stacked files to ~/
 Moves stacked output JPGs to the Lightroom import directory structure
 Tracks three categories: input files (stacked frames), output files (stacked results), and remaining files
 
-
 - Self-Healing Logic
 
 Detects when destination files exist but are 0 bytes (from interrupted previous runs)
 Automatically replaces them with valid source files
 Works in both dry-run and normal mode
-
 
 - New --debug-stacks Flag
 
@@ -77,8 +85,10 @@ Shows timestamp gaps, sequence matching, and safety check results
 Very helpful for troubleshooting stack detection issues
 
 ## **[1.3] — 2025-11-22**
+
 ### **Added**
-- Lightroom mode now processes stacked output JPGs *even if already renamed* (i.e., containing `"stacked"` in filename).
+
+- Lightroom mode now processes stacked output JPGs _even if already renamed_ (i.e., containing `"stacked"` in filename).
 - Cross-filesystem safe move handling:
   - Falls back to `copyfile + unlink` instead of `shutil.move()` for SD→disk transfers.
 - File deduplication based on content comparison:
@@ -88,17 +98,20 @@ Very helpful for troubleshooting stack detection issues
 - Parallel input-file moves and copies now supported in Lightroom mode when `--jobs` is set - which it is by default.
 
 ### **Improved**
+
 - `mtime` is now lazily loaded (`get_file_mtime()`) ensuring accurate timestamp comparison when identifying input frames.
 - Lightroom summary now reports:
-  - Number of stacked outputs *processed*, not just renamed.
+  - Number of stacked outputs _processed_, not just renamed.
   - Count of RAW/JPG input files moved.
 - Reduced repeated warnings when rerunning on partially imported cards.
 
 ### **Fixed**
+
 - Previously, already-renamed stacked JPGs were skipped entirely, preventing input frames from being moved.
 - `shutil.move()` cross-device failures on WSL/drvfs mount points.
 
 ### **Performance**
+
 - Significantly faster import speeds with multi-threaded copy (especially large stacks from SD cards).
 - Avoids redundant copies when rerunning Lightroom mode.
 
@@ -113,9 +126,9 @@ The fix changes the burst detection to compare timestamps between consecutive ra
 
 ### Added
 
-- `--lightroom` mode: A new mode to streamline the workflow for processing in-camera stacks for use with Adobe Lightroom.  The idea is that you run this on the photos on the camera card before you import to lightroom so you only import the files you need, not all the input files to the stack.
+- `--lightroom` mode: A new mode to streamline the workflow for processing in-camera stacks for use with Adobe Lightroom. The idea is that you run this on the photos on the camera card before you import to lightroom so you only import the files you need, not all the input files to the stack.
 - Identifies in-camera photo stacks (3-15 input files and one output file).
 - Moves the input files (both JPG and ORF) of identified stacks to a dated directory structure (e.g., `/home/alan/pictures/olympus.stack.input.photos/2025/2025-10-30/`).
 - Renames the stacked output JPG in its original directory.
 - Single-shot photos and focus bracketed photos (JPG/ORF pairs not part of a stack) are left untouched.
-.
+  .
