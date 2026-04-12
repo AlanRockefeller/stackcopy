@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Stackcopy version 1.5.4 by Alan Rockefeller
-# 4/10/26
+# 4/11/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -847,12 +847,6 @@ def main():
                 f"Error: Date format for --date must be YYYY-MM-DD. You provided '{args.date}'."
             )
             sys.exit(1)
-
-    # Date filters should only work with copy operations (copy or stackcopy), not rename
-    if (args.today or args.yesterday or args.date) and args.rename is not None:
-        parser.error(
-            "The --today, --yesterday, and --date arguments cannot be used with --rename operation."
-        )
 
     # If no operation mode is specified, show help and exit
     if (
