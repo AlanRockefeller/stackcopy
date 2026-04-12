@@ -92,10 +92,14 @@ def _default_pictures_dir() -> str:
 
             CSIDL_MYPICTURES = 0x0027
             buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_MYPICTURES, None, 0, buf)
-            if buf.value:
-                return buf.value
-        except Exception:
+            # Fetch the path and check HRESULT (0 == S_OK)
+            hresult = ctypes.windll.shell32.SHGetFolderPathW(
+                None, CSIDL_MYPICTURES, None, 0, buf
+            )
+            if hresult == 0:
+                if buf.value:
+                    return buf.value
+        except (ImportError, AttributeError):
             pass
     # On Linux/WSL, prefer ~/pictures if it exists (common convention),
     # otherwise fall back to ~/Pictures.
@@ -235,7 +239,14 @@ def display_path(path):
     """Format a path for user display, shortening to ~ on non-Windows platforms."""
     if os.name == "nt":
         return os.path.abspath(path)
-    return path.replace(os.path.expanduser("~"), "~")
+    home = os.path.expanduser("~")
+    abspath = os.path.abspath(path)
+    if abspath == home:
+        return "~"
+    prefix = home + os.sep
+    if abspath.startswith(prefix):
+        return "~" + os.sep + abspath[len(prefix) :]
+    return abspath
 
 
 def paths_are_same(path1, path2):
@@ -385,16 +396,28 @@ def _atomic_copy2(src_path: str, dest_path: str) -> None:
 def safe_file_operation(
     operation, src_path, dest_path, operation_name, force=False, dry_run=False
 ):
+    """
+    Perform a safe file copy or move.
+    Returns: (success_bool, bytes_copied_count)
+    """
+    # Determine size before operation in case of move/deletion
+    src_size = 0
+    if os.path.exists(src_path):
+        try:
+            src_size = os.path.getsize(src_path)
+        except OSError:
+            pass
+
     # If destination exists and we're not forcing, see if it's identical to the source.
     if os.path.exists(dest_path) and not force:
         # Check self-heal first (applies to both dry-run and real)
         is_self_heal = False
         try:
             if os.path.exists(src_path):
-                src_size = os.path.getsize(src_path)
+                src_size_curr = os.path.getsize(src_path)
                 dst_size = os.path.getsize(dest_path)
                 # Self-heal: if destination is a 0-byte placeholder but source is non-zero
-                if src_size > 0 and dst_size == 0:
+                if src_size_curr > 0 and dst_size == 0:
                     is_self_heal = True
         except OSError:
             pass
@@ -409,7 +432,7 @@ def safe_file_operation(
             print(
                 f"Warning: '{dest_path}' already exists. Would need --force to overwrite."
             )
-            return False
+            return False, 0
         elif os.path.exists(src_path):
             # If contents are identical, treat this as success.
             if files_identical(src_path, dest_path):
@@ -426,28 +449,29 @@ def safe_file_operation(
                             f"Note: destination '{dest_path}' already exists with identical content; "
                             f"deleted source '{src_path}'."
                         )
-                    return True
+                    return True, 0
                 else:
                     print(
                         f"Note: destination '{dest_path}' already exists with identical content; "
                         f"skipping copy from '{src_path}'."
                     )
-                    return True
+                    return True, 0
 
             print(f"Warning: '{dest_path}' already exists. Use --force to overwrite.")
-            return False
+            return False, 0
         else:
             print(f"Warning: '{dest_path}' already exists. Use --force to overwrite.")
-            return False
+            return False, 0
 
     if dry_run:
-        return True
+        return True, 0
 
     try:
         if operation == "move":
             try:
-                # Same-filesystem fast path
+                # Same-filesystem fast path (metadata only)
                 os.replace(src_path, dest_path)
+                return True, 0
             except OSError as move_error:
                 if move_error.errno == errno.EXDEV:
                     # Cross-device: atomic copy then delete source
@@ -459,16 +483,19 @@ def safe_file_operation(
                             f"Note: {operation_name} '{src_path}' to '{dest_path}' completed, "
                             f"but source could not be deleted: {delete_error}"
                         )
+                    # For cross-device moves, bytes were physically moved
+                    return True, src_size
                 else:
                     raise
         elif operation == "copy":
             _atomic_copy2(src_path, dest_path)
+            return True, src_size
 
-        return True
+        return True, 0
 
     except (OSError, shutil.Error) as e:
         print(f"Error {operation_name} '{src_path}' to '{dest_path}': {e}")
-        return False
+        return False, 0
 
 
 def format_bytes(n: int) -> str:
@@ -1669,22 +1696,7 @@ def main():
         for move in planned_moves:
             ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
 
-            # Get size for throughput tracking (only count if it's a cross-device move)
-            f_size = 0
-            is_cross_device_move = True
-            if not args.dry_run:
-                try:
-                    src_stat = os.stat(move.src_path)
-                    f_size = src_stat.st_size
-                    # Check if it's a cross-device move
-                    src_dev = src_stat.st_dev
-                    dest_dev = get_device_id(move.dest_path)
-                    if dest_dev is not None and src_dev == dest_dev:
-                        is_cross_device_move = False
-                except OSError:
-                    pass
-
-            success = safe_file_operation(
+            success, bytes_moved = safe_file_operation(
                 "move",
                 move.src_path,
                 move.dest_path,
@@ -1704,8 +1716,7 @@ def main():
             res["moves"].append({"move": move, "success": success})
 
             if success:
-                if is_cross_device_move:
-                    total_bytes_moved += f_size
+                total_bytes_moved += bytes_moved
                 if move.category == "stack_output":
                     moved_output_count += 1
                     processed_count += 1
@@ -1805,31 +1816,16 @@ def main():
                         file_dest_basename = chosen.get(ft, file_info["basename"])
                         dest_path = os.path.join(dest_dir_import, file_dest_basename)
 
-                        # Get size for throughput tracking (only count if it's a cross-device move)
-                        f_size = 0
-                        is_cross_device_move = True
-                        if not args.dry_run:
-                            try:
-                                src_stat = os.stat(file_info["path"])
-                                f_size = src_stat.st_size
-                                # Check if it's a cross-device move
-                                src_dev = src_stat.st_dev
-                                dest_dev = get_device_id(dest_path)
-                                if dest_dev is not None and src_dev == dest_dev:
-                                    is_cross_device_move = False
-                            except OSError:
-                                pass
-
-                        if safe_file_operation(
+                        success, bytes_moved = safe_file_operation(
                             "move",
                             file_info["path"],
                             dest_path,
                             "moving recovered remaining file",
                             args.force,
                             args.dry_run,
-                        ):
-                            if is_cross_device_move:
-                                total_bytes_moved += f_size
+                        )
+                        if success:
+                            total_bytes_moved += bytes_moved
                             remaining_moved_count += 1
                             if args.verbose or args.dry_run:
                                 verb = "Would move" if args.dry_run else "Moved"
@@ -2095,14 +2091,15 @@ def main():
                                 args.dry_run,
                             )
 
-                    if safe_file_operation(
+                    success, _ = safe_file_operation(
                         "move",
                         orig_jpg_path,
                         dest_path,
                         "renaming",
                         args.force,
                         args.dry_run,
-                    ):
+                    )
+                    if success:
                         # Note: we do not mutate jpg_record["basename"] in-place here (per global rule)
                         processed_count += 1
                         if args.verbose or args.dry_run:
@@ -2255,9 +2252,10 @@ def main():
                     ldest,
                     inp_stem,
                 ) in move_operations:
-                    if safe_file_operation(
+                    success, _ = safe_file_operation(
                         "move", src_path, dest_path, desc, args.force, args.dry_run
-                    ):
+                    )
+                    if success:
                         moved_input_count += 1
                         input_dest_dirs.add(ldest)
                         successful_moves_per_stem[inp_stem] += 1
@@ -2455,7 +2453,7 @@ def main():
                         new_filename = create_new_filename(name_stem, ext, args.prefix)
                         dest_path = os.path.join(dest_dir, new_filename)
                         used_prefix = bool(args.prefix)
-                        success = safe_file_operation(
+                        success, _ = safe_file_operation(
                             "move",
                             jpg_path,
                             dest_path,
@@ -2467,7 +2465,7 @@ def main():
                         new_filename = create_new_filename(name_stem, ext, args.prefix)
                         dest_path = os.path.join(dest_dir, new_filename)
                         used_prefix = True
-                        success = safe_file_operation(
+                        success, _ = safe_file_operation(
                             "copy",
                             jpg_path,
                             dest_path,
@@ -2485,7 +2483,7 @@ def main():
                         else:
                             new_filename = filename
                             dest_path = os.path.join(dest_dir, filename)
-                        success = safe_file_operation(
+                        success, _ = safe_file_operation(
                             "copy",
                             jpg_path,
                             dest_path,
