@@ -112,10 +112,11 @@ def _default_pictures_dir() -> str:
 #   STACKCOPY_LIGHTROOM_IMPORT_DIR  — where stacked outputs and remaining files go
 # ---------------------------------------------------------------------------
 
-STACK_INPUT_DIR = os.environ.get(
-    "STACKCOPY_STACK_INPUT_DIR",
-    os.path.join(_default_pictures_dir(), "olympus.stack.input.photos"),
-)
+_env_stack_input = os.environ.get("STACKCOPY_STACK_INPUT_DIR")
+if _env_stack_input:
+    STACK_INPUT_DIR = os.path.abspath(os.path.expanduser(_env_stack_input))
+else:
+    STACK_INPUT_DIR = os.path.join(_default_pictures_dir(), "olympus.stack.input.photos")
 
 # Regex to identify numeric stems for sequence grouping.
 # It assumes numeric parts are 6 or more digits, common for Olympus/OM System in-camera stacking.
@@ -715,7 +716,11 @@ def main():
         nargs="?",
         const=os.getcwd(),
         metavar="DIR",
-        help="Same as --lightroom, but moves remaining files to ~/Pictures/Lightroom/YEAR/DATE/.",
+        help=(
+            "Same as --lightroom, but moves remaining files to a dated directory structure "
+            f"under the user's Pictures directory (default: {os.path.join(_default_pictures_dir(), 'Lightroom')}/YEAR/DATE/). "
+            "The destination can be overridden via the STACKCOPY_LIGHTROOM_IMPORT_DIR environment variable."
+        ),
     )
 
     # Add date filtering options
@@ -953,10 +958,11 @@ def main():
         wsl_check_paths.append(STACK_INPUT_DIR)
         if operation_mode == "lightroomimport":
             # For lightroomimport, also check the base import directory
-            import_base = os.environ.get(
-                "STACKCOPY_LIGHTROOM_IMPORT_DIR",
-                os.path.join(_default_pictures_dir(), "Lightroom"),
-            )
+            _env_import_base = os.environ.get("STACKCOPY_LIGHTROOM_IMPORT_DIR")
+            if _env_import_base:
+                import_base = os.path.abspath(os.path.expanduser(_env_import_base))
+            else:
+                import_base = os.path.join(_default_pictures_dir(), "Lightroom")
             wsl_check_paths.append(import_base)
 
     _warn_wsl_performance(wsl_check_paths, operation_mode)
@@ -1062,10 +1068,15 @@ def main():
 
         collision_notified = set()
         reserved_dest_paths: set[str] = set()
-        lightroom_import_base_dir = os.environ.get(
-            "STACKCOPY_LIGHTROOM_IMPORT_DIR",
-            os.path.join(_default_pictures_dir(), "Lightroom"),
-        )
+        _env_lightroom_import = os.environ.get("STACKCOPY_LIGHTROOM_IMPORT_DIR")
+        if _env_lightroom_import:
+            lightroom_import_base_dir = os.path.abspath(
+                os.path.expanduser(_env_lightroom_import)
+            )
+        else:
+            lightroom_import_base_dir = os.path.join(
+                _default_pictures_dir(), "Lightroom"
+            )
 
         # --- Phase A: Detection and Planning ---
 
@@ -1658,11 +1669,18 @@ def main():
         for move in planned_moves:
             ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
 
-            # Get size for throughput tracking
+            # Get size for throughput tracking (only count if it's a cross-device move)
             f_size = 0
+            is_cross_device_move = True
             if not args.dry_run:
                 try:
-                    f_size = os.path.getsize(move.src_path)
+                    src_stat = os.stat(move.src_path)
+                    f_size = src_stat.st_size
+                    # Check if it's a cross-device move
+                    src_dev = src_stat.st_dev
+                    dest_dev = get_device_id(move.dest_path)
+                    if dest_dev is not None and src_dev == dest_dev:
+                        is_cross_device_move = False
                 except OSError:
                     pass
 
@@ -1686,7 +1704,8 @@ def main():
             res["moves"].append({"move": move, "success": success})
 
             if success:
-                total_bytes_moved += f_size
+                if is_cross_device_move:
+                    total_bytes_moved += f_size
                 if move.category == "stack_output":
                     moved_output_count += 1
                     processed_count += 1
@@ -1786,11 +1805,18 @@ def main():
                         file_dest_basename = chosen.get(ft, file_info["basename"])
                         dest_path = os.path.join(dest_dir_import, file_dest_basename)
 
-                        # Get size for throughput tracking
+                        # Get size for throughput tracking (only count if it's a cross-device move)
                         f_size = 0
+                        is_cross_device_move = True
                         if not args.dry_run:
                             try:
-                                f_size = os.path.getsize(file_info["path"])
+                                src_stat = os.stat(file_info["path"])
+                                f_size = src_stat.st_size
+                                # Check if it's a cross-device move
+                                src_dev = src_stat.st_dev
+                                dest_dev = get_device_id(dest_path)
+                                if dest_dev is not None and src_dev == dest_dev:
+                                    is_cross_device_move = False
                             except OSError:
                                 pass
 
@@ -1802,7 +1828,8 @@ def main():
                             args.force,
                             args.dry_run,
                         ):
-                            total_bytes_moved += f_size
+                            if is_cross_device_move:
+                                total_bytes_moved += f_size
                             remaining_moved_count += 1
                             if args.verbose or args.dry_run:
                                 verb = "Would move" if args.dry_run else "Moved"
@@ -2494,15 +2521,18 @@ def main():
         if args.dry_run:
             print(f"DRY RUN complete. {total_moved} files would be moved.")
         else:
-            total_gb = total_bytes_moved / (1000**3)
-            mbps = 0
-            if exec_elapsed_time > 0:
-                mbps = (total_bytes_moved / (1000**2)) / exec_elapsed_time
+            throughput_info = ""
+            if total_bytes_moved > 0:
+                total_gb = total_bytes_moved / (1000**3)
+                mbps = 0
+                if exec_elapsed_time > 0:
+                    mbps = (total_bytes_moved / (1000**2)) / exec_elapsed_time
+                throughput_info = f"Data: {total_gb:.1f} GB at {mbps:.1f} MB/s average. "
 
             print(
                 f"Done. Imported {total_moved} files in {exec_elapsed_time:.1f}s. "
                 f"Breakdown: {moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining. "
-                f"Data: {total_gb:.1f} GB at {mbps:.1f} MB/s average. Failures: {failed_count}."
+                f"{throughput_info}Failures: {failed_count}."
             )
     elif args.dry_run:
         # Custom summary for dry-run
