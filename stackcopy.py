@@ -658,7 +658,9 @@ def format_action_message(
                 action = "Would copy"
             else:
                 action = "Copied" if success else "Failed to copy"
-        return f"{action} '{filename}' to '{dest_filename}' in '{display_path(dest_dir)}'"
+        return (
+            f"{action} '{filename}' to '{dest_filename}' in '{display_path(dest_dir)}'"
+        )
 
 
 def main():
@@ -922,9 +924,7 @@ def main():
         try:
             ensure_directory_once(STACK_INPUT_DIR, created_dirs, args.dry_run)
         except OSError as e:
-            print(
-                f"Error creating stack input directory '{STACK_INPUT_DIR}': {e}"
-            )
+            print(f"Error creating stack input directory '{STACK_INPUT_DIR}': {e}")
             sys.exit(1)
     else:  # --stackcopy mode
         operation_mode = "stackcopy"
@@ -1730,15 +1730,11 @@ def main():
                     # Generic partial failure reporting (some succeeded, some failed)
                     partial_failures_found = True
                     print(f"\n*** PARTIAL FAILURE WARNING for stem '{stem}' ***")
-                    print(
-                        f"  Only {succeeded} of {expected} planned moves succeeded."
-                    )
+                    print(f"  Only {succeeded} of {expected} planned moves succeeded.")
                     for m_res in res["moves"]:
                         move = m_res["move"]
                         status = "SUCCESS" if m_res["success"] else "FAILED"
-                        print(
-                            f"  [{status}] {move.basename_orig} -> {move.dest_path}"
-                        )
+                        print(f"  [{status}] {move.basename_orig} -> {move.dest_path}")
                     print("*********************************************\n")
 
         if recovery_stems:
