@@ -72,7 +72,7 @@ Moves the input files of a stack to a dated folder structure and renames the out
 
 ### `--lightroomimport [DIR]`
 
-The full workflow. Plans all moves first, shows a summary, then moves files oldest-first by photo time. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library.
+The full workflow. Plans all moves first, shows a summary, then moves files oldest-first by photo time. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library. It doesn't actually import to Lightroom - it just puts the photos where lightroom would have put them - except for the stack input files, which go to a different directory. You'll want them if you don't like how the in-camera stacking worked, or want to stack the raw files.
 
 ```bash
 ./stackcopy.py --lightroomimport /photos/camera-import/
@@ -211,7 +211,7 @@ stackcopy is designed to be cautious:
 
 ## WSL note
 
-If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., it will be significantly slower than native Linux paths due to the 9P filesystem bridge. The script will warn you about this. To get better performance, either copy files to a native Linux path first, or run stackcopy directly on Windows.
+If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., it will be significantly slower than native Linux paths due to the 9P filesystem bridge. The script will warn you about this. To get better performance, either copy files to a native Linux path first, or run stackcopy directly on Windows. On my system, running the same command in Windows vs. WSL is 5 times faster.
 
 ## Tips
 
