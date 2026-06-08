@@ -1,5 +1,14 @@
 # Change Log
 
+## **1.5.5 - 2026-06-08**
+
+- `--lightroomimport` now treats supported video files like single-shot photos and moves them to the same dated Lightroom import directory.
+- Added video extension support for `.mov`, `.mp4`, `.m4v`, `.avi`, `.mts`, `.m2ts`, `.mpg`, `.mpeg`, and `.wmv`.
+- `--lightroomimport` now scans the source directory recursively, so passing a camera `DCIM` folder processes all camera subfolders.
+- The recursive scan skips its own destination directories, so it no longer re-imports already-sorted photos when the Lightroom or stack-input folders live under the source.
+- An unreadable subdirectory is now reported and skipped instead of aborting the whole import.
+- A file whose source and destination resolve to the same file is now a no-op instead of being deleted.
+
 ## \*\*1.5.4 - 2026-04-10
 
 - Improved Windows support.
