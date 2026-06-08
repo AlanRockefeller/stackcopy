@@ -12,6 +12,8 @@ The matching is case-insensitive, so `IMG_1234.JPG` will match with `img_1234.or
 
 Supported RAW extensions: `.orf`, `.cr2`, `.nef`, `.arw`, `.dng`, `.pef`, `.rw2`, `.raf`, `.raw`, `.sr2`.
 
+Supported video extensions for `--lightroomimport`: `.mov`, `.mp4`, `.m4v`, `.avi`, `.mts`, `.m2ts`, `.mpg`, `.mpeg`, `.wmv`.
+
 ## Installation
 
 Clone the repo:
@@ -72,7 +74,7 @@ Moves the input files of a stack to a dated folder structure and renames the out
 
 ### `--lightroomimport [DIR]`
 
-The full workflow. Plans all moves first, shows a summary, then moves files oldest-first by photo time. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library. It doesn't actually import to Lightroom - it just puts the photos where lightroom would have put them - except for the stack input files, which go to a different directory. You'll want them if you don't like how the in-camera stacking worked, or want to stack the raw files.
+The full workflow. Scans the source directory recursively, plans all moves first, shows a summary, then moves files oldest-first by photo time. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library. Videos are treated like single-shot photos and moved to the same dated Lightroom destination. It doesn't actually import to Lightroom - it just puts the photos and videos where Lightroom would have put them - except for the stack input files, which go to a different directory. You'll want them if you don't like how the in-camera stacking worked, or want to stack the raw files.
 
 ```bash
 ./stackcopy.py --lightroomimport /photos/camera-import/
@@ -98,7 +100,7 @@ Override with the `STACKCOPY_STACK_INPUT_DIR` environment variable.
 
 ### Lightroom import destination
 
-When using `--lightroomimport`, stacked outputs and remaining files go to:
+When using `--lightroomimport`, stacked outputs, single-shot/focus-bracket photos, and videos go to:
 
 ```
 <Pictures>/Lightroom/YYYY/YYYY-MM-DD/
@@ -131,7 +133,7 @@ You went mushroom hunting and want to just copy the stacked photos you took toda
 ./stackcopy.py --lightroomimport /media/camera-card/ --verbose
 ```
 
-This will scan all files and detect stacked outputs, plan all moves and show a summary, then move everything oldest-first: stack input frames to the input archive, stacked outputs (with " stacked" suffix) to your Lightroom library, and all remaining files to your Lightroom library.
+This will scan all files, including files in camera subfolders such as `DCIM/100OMSYS` and `DCIM/101OMSYS`, detect stacked outputs, plan all moves and show a summary, then move everything oldest-first: stack input frames to the input archive, stacked outputs (with " stacked" suffix) to your Lightroom library, and all remaining photos and videos to your Lightroom library.
 
 A successful run ends with a summary like:
 
@@ -164,7 +166,7 @@ This shows which files are being considered, timestamp gaps between frames, why 
 - `--rename [DIR]` — Rename orphaned JPGs in-place (default: current directory)
 - `--stackcopy [DIR]` — Copy to a "stacked" subfolder with renamed files
 - `--lightroom [DIR]` — Move stack inputs to a dated folder, rename outputs in place
-- `--lightroomimport [DIR]` — Full import: plans all moves, then executes oldest-first
+- `--lightroomimport [DIR]` — Full recursive import: plans all moves, then executes oldest-first
 
 ### Date filters
 
@@ -224,8 +226,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.5.4
-- **Date**: April 11, 2026
+- **Version**: 1.5.5
+- **Date**: June 8, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

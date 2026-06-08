@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.4 by Alan Rockefeller
-# 4/11/26
+# Stackcopy version 1.5.5 by Alan Rockefeller
+# 6/8/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -110,6 +110,14 @@ def _default_pictures_dir() -> str:
     return os.path.join(home, "Pictures")
 
 
+def _lightroom_import_base_dir() -> str:
+    """Resolve the --lightroomimport destination (env override or default)."""
+    env_base = os.environ.get("STACKCOPY_LIGHTROOM_IMPORT_DIR")
+    if env_base:
+        return os.path.abspath(os.path.expanduser(env_base))
+    return os.path.join(_default_pictures_dir(), "Lightroom")
+
+
 # ---------------------------------------------------------------------------
 # Default paths — override with environment variables if needed:
 #   STACKCOPY_STACK_INPUT_DIR       — where stack input photos go
@@ -120,7 +128,9 @@ _env_stack_input = os.environ.get("STACKCOPY_STACK_INPUT_DIR")
 if _env_stack_input:
     STACK_INPUT_DIR = os.path.abspath(os.path.expanduser(_env_stack_input))
 else:
-    STACK_INPUT_DIR = os.path.join(_default_pictures_dir(), "olympus.stack.input.photos")
+    STACK_INPUT_DIR = os.path.join(
+        _default_pictures_dir(), "olympus.stack.input.photos"
+    )
 
 # Regex to identify numeric stems for sequence grouping.
 # It assumes numeric parts are 6 or more digits, common for Olympus/OM System in-camera stacking.
@@ -137,7 +147,7 @@ class PlannedMove:
     dest_path: str  # final destination (single move, no intermediate steps)
     category: str  # "stack_output", "stack_input", "remaining"
     stem: str
-    file_type: str  # "jpg" or "raw"
+    file_type: str  # "jpg", "raw", or "video"
     mtime: datetime | None
     basename_orig: str  # original filename
     basename_dest: (
@@ -172,6 +182,46 @@ def get_file_date(file_record, verbose=False):
     if get_file_mtime(file_record, verbose):
         return file_record.get("date")
     return None
+
+
+def _path_is_within(path: str, root: str) -> bool:
+    """True if `path` equals `root` or is nested within it (both absolute)."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        # Different drives (Windows) or an abs/relative mismatch -> not within.
+        return False
+
+
+def iter_source_file_entries(src_dir: str, recursive: bool = False, exclude_dirs=()):
+    """Yield files from src_dir, optionally descending into subdirectories.
+
+    Subdirectories whose real path is at or under any path in `exclude_dirs`
+    are skipped, so a recursive scan never descends into its own destination
+    dirs. Unreadable subdirectories are reported and skipped rather than
+    aborting the whole scan (a failure on the top-level src_dir still
+    propagates to the caller).
+    """
+    with os.scandir(src_dir) as entries:
+        sorted_entries = sorted(entries, key=lambda e: e.name.lower())
+
+    for entry in sorted_entries:
+        if entry.is_file():
+            yield entry
+        elif recursive and entry.is_dir(follow_symlinks=False):
+            if any(
+                _path_is_within(os.path.realpath(entry.path), excl)
+                for excl in exclude_dirs
+            ):
+                continue
+            try:
+                yield from iter_source_file_entries(
+                    entry.path, recursive=True, exclude_dirs=exclude_dirs
+                )
+            except OSError as scan_error:
+                print(
+                    f"Warning: skipping unreadable directory '{entry.path}': {scan_error}"
+                )
 
 
 def get_stem_mtime(record, verbose=False):
@@ -407,6 +457,19 @@ def safe_file_operation(
             src_size = os.path.getsize(src_path)
         except OSError:
             pass
+
+    # If the source and destination are the same file, there is nothing to do.
+    # Without this guard, the "identical content" branch below would unlink the
+    # source -- which is also the destination -- and destroy the only copy.
+    try:
+        if (
+            os.path.exists(src_path)
+            and os.path.exists(dest_path)
+            and os.path.samefile(src_path, dest_path)
+        ):
+            return True, 0
+    except OSError:
+        pass
 
     # If destination exists and we're not forcing, see if it's identical to the source.
     if os.path.exists(dest_path) and not force:
@@ -744,7 +807,7 @@ def main():
         const=os.getcwd(),
         metavar="DIR",
         help=(
-            "Same as --lightroom, but moves remaining files to a dated directory structure "
+            "Same as --lightroom, but scans recursively and moves remaining photos and videos to a dated directory structure "
             f"under the user's Pictures directory (default: {os.path.join(_default_pictures_dir(), 'Lightroom')}/YEAR/DATE/). "
             "The destination can be overridden via the STACKCOPY_LIGHTROOM_IMPORT_DIR environment variable."
         ),
@@ -985,16 +1048,11 @@ def main():
         wsl_check_paths.append(STACK_INPUT_DIR)
         if operation_mode == "lightroomimport":
             # For lightroomimport, also check the base import directory
-            _env_import_base = os.environ.get("STACKCOPY_LIGHTROOM_IMPORT_DIR")
-            if _env_import_base:
-                import_base = os.path.abspath(os.path.expanduser(_env_import_base))
-            else:
-                import_base = os.path.join(_default_pictures_dir(), "Lightroom")
-            wsl_check_paths.append(import_base)
+            wsl_check_paths.append(_lightroom_import_base_dir())
 
     _warn_wsl_performance(wsl_check_paths, operation_mode)
 
-    # Define a list of common raw photo extensions
+    # Define a list of common media extensions
     RAW_EXTENSIONS = {
         ".orf",
         ".cr2",
@@ -1008,6 +1066,18 @@ def main():
         ".sr2",
     }
     JPG_EXTENSIONS = {".jpg", ".jpeg"}
+    VIDEO_EXTENSIONS = {
+        ".mov",
+        ".mp4",
+        ".m4v",
+        ".avi",
+        ".mts",
+        ".m2ts",
+        ".mpg",
+        ".mpeg",
+        ".wmv",
+    }
+    REMAINING_FILE_TYPES = ("jpg", "raw", "video")
 
     # --- 1. Scan directory and build file database ---
     # file_db stores metadata for each unique file stem found in the source directory.
@@ -1016,10 +1086,12 @@ def main():
     #   "filename_stem": {
     #     "files": {
     #       "raw": {"path": "...", "mtime": datetime_obj, "date": date_obj},
-    #       "jpg": {"path": "...", "mtime": datetime_obj, "date": date_obj}
+    #       "jpg": {"path": "...", "mtime": datetime_obj, "date": date_obj},
+    #       "video": {"path": "...", "mtime": datetime_obj, "date": date_obj}
     #     },
     #     "has_raw": bool,
     #     "has_jpg": bool,
+    #     "has_video": bool,
     #     "numeric": {
     #       "prefix": "alpha_prefix",
     #       "num": int_sequence_number,
@@ -1028,17 +1100,38 @@ def main():
     #   },
     #   ...
     # }
+    scan_recursively = operation_mode == "lightroomimport"
+    scan_exclude_dirs = ()
+    if scan_recursively:
+        # Don't descend into our own destination dirs when they live under
+        # src_dir (e.g. running with no argument from ~/Pictures), which would
+        # otherwise re-import already-sorted files on every run.
+        scan_exclude_dirs = tuple(
+            os.path.realpath(p) for p in (_lightroom_import_base_dir(), STACK_INPUT_DIR)
+        )
     file_db = {}
     try:
-        for entry in os.scandir(src_dir):
-            if not entry.is_file():
-                continue
-
+        for entry in iter_source_file_entries(
+            src_dir, recursive=scan_recursively, exclude_dirs=scan_exclude_dirs
+        ):
             stem, ext = os.path.splitext(entry.name)
             ext_lower = ext.lower()
+            relative_dir = os.path.relpath(os.path.dirname(entry.path), src_dir)
+            record_key = (
+                stem
+                if not scan_recursively or relative_dir == "."
+                else os.path.join(relative_dir, stem)
+            )
 
             record = file_db.setdefault(
-                stem, {"files": {}, "has_raw": False, "has_jpg": False}
+                record_key,
+                {
+                    "files": {},
+                    "has_raw": False,
+                    "has_jpg": False,
+                    "has_video": False,
+                    "relative_dir": relative_dir,
+                },
             )
             file_meta = {
                 "path": entry.path,
@@ -1064,6 +1157,9 @@ def main():
             elif ext_lower in JPG_EXTENSIONS:
                 record["has_jpg"] = True
                 record["files"]["jpg"] = file_meta
+            elif ext_lower in VIDEO_EXTENSIONS:
+                record["has_video"] = True
+                record["files"]["video"] = file_meta
 
     except OSError as e:
         print(f"Error scanning source directory '{src_dir}': {e}")
@@ -1073,7 +1169,8 @@ def main():
     for stem, record in file_db.items():
         numeric_info = record.get("numeric")
         if numeric_info and (record.get("has_raw") or record.get("has_jpg")):
-            sequences_by_prefix.setdefault(numeric_info["prefix"], []).append(
+            sequence_key = (record.get("relative_dir", "."), numeric_info["prefix"])
+            sequences_by_prefix.setdefault(sequence_key, []).append(
                 (numeric_info["num"], stem)
             )
     for prefix in sequences_by_prefix:
@@ -1095,15 +1192,7 @@ def main():
 
         collision_notified = set()
         reserved_dest_paths: set[str] = set()
-        _env_lightroom_import = os.environ.get("STACKCOPY_LIGHTROOM_IMPORT_DIR")
-        if _env_lightroom_import:
-            lightroom_import_base_dir = os.path.abspath(
-                os.path.expanduser(_env_lightroom_import)
-            )
-        else:
-            lightroom_import_base_dir = os.path.join(
-                _default_pictures_dir(), "Lightroom"
-            )
+        lightroom_import_base_dir = _lightroom_import_base_dir()
 
         # --- Phase A: Detection and Planning ---
 
@@ -1170,7 +1259,8 @@ def main():
 
             prefix = numeric_info["prefix"]
             output_num = numeric_info["num"]
-            sequence = sequences_by_prefix.get(prefix)
+            sequence_key = (output_data.get("relative_dir", "."), prefix)
+            sequence = sequences_by_prefix.get(sequence_key)
 
             if args.debug_stacks:
                 print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
@@ -1508,14 +1598,12 @@ def main():
                     processed_stems_for_remaining.add(input_stem)
 
         # A3. Plan remaining files
-        all_stems = set(file_db.keys())
-        remaining_stems = all_stems - processed_stems_for_remaining
-
-        for stem in remaining_stems:
-            record = file_db[stem]
-
+        for stem, record in file_db.items():
             files_by_dest: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-            for file_type in ["jpg", "raw"]:
+            for file_type in REMAINING_FILE_TYPES:
+                if file_type != "video" and stem in processed_stems_for_remaining:
+                    continue
+
                 file_info = record["files"].get(file_type)
                 if not file_info:
                     continue
@@ -1775,7 +1863,7 @@ def main():
             for stem in recovery_stems:
                 record = file_db[stem]
                 files_by_dest: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-                for file_type in ["jpg", "raw"]:
+                for file_type in REMAINING_FILE_TYPES:
                     file_info = record["files"].get(file_type)
                     if not file_info:
                         continue
@@ -1897,7 +1985,8 @@ def main():
 
             prefix = numeric_info["prefix"]
             output_num = numeric_info["num"]
-            sequence = sequences_by_prefix.get(prefix)
+            sequence_key = (output_data.get("relative_dir", "."), prefix)
+            sequence = sequences_by_prefix.get(sequence_key)
 
             if args.debug_stacks:
                 print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
@@ -2525,7 +2614,9 @@ def main():
                 mbps = 0
                 if exec_elapsed_time > 0:
                     mbps = (total_bytes_moved / (1000**2)) / exec_elapsed_time
-                throughput_info = f"Data: {total_gb:.1f} GB at {mbps:.1f} MB/s average. "
+                throughput_info = (
+                    f"Data: {total_gb:.1f} GB at {mbps:.1f} MB/s average. "
+                )
 
             print(
                 f"Done. Imported {total_moved} files in {exec_elapsed_time:.1f}s. "
