@@ -76,7 +76,7 @@ Files land in exactly the same place as the `--lightroomimport` command — see
 Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefeller/stackcopy/releases):
 
 - **macOS** — `Stackcopy.dmg`: open it, drag **Stackcopy** to Applications, launch it.
-- **Windows** — `Stackcopy.zip`: unzip it, then double-click `Stackcopy.exe`.
+- **Windows** — `Stackcopy-Windows.zip`: unzip it, then double-click `Stackcopy.exe`.
   Keep `StackcopyCLI.exe` in the same folder; the GUI uses it for imports.
 
 > **First launch of an unsigned app:** macOS may say it's from an unidentified
