@@ -25,7 +25,7 @@ jobs:
           - os: macos-latest
             artifact: Stackcopy-macOS
           - os: windows-latest
-            artifact: Stackcopy-Windows
+            artifact: stackcopy-windows
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -66,14 +66,16 @@ jobs:
       - name: Package Windows zip
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist/Stackcopy -DestinationPath dist/Stackcopy-Windows.zip
+        run: |
+          Move-Item -Path dist/Stackcopy -Destination dist/stackcopy
+          Compress-Archive -Path dist/stackcopy -DestinationPath dist/stackcopy-windows.zip
 
       - name: Upload Windows artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/Stackcopy-Windows.zip
+          path: dist/stackcopy-windows.zip
           if-no-files-found: error
 
   release:
@@ -96,5 +98,5 @@ jobs:
         with:
           files: |
             release-assets/Stackcopy.dmg
-            release-assets/Stackcopy-Windows.zip
+            release-assets/stackcopy-windows.zip
           fail_on_unmatched_files: true
