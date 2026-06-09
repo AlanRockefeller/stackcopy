@@ -76,7 +76,8 @@ Files land in exactly the same place as the `--lightroomimport` command — see
 Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefeller/stackcopy/releases):
 
 - **macOS** — `Stackcopy.dmg`: open it, drag **Stackcopy** to Applications, launch it.
-- **Windows** — `Stackcopy.exe`: download and double-click. No Python required.
+- **Windows** — `Stackcopy.zip`: unzip it, then double-click `Stackcopy.exe`.
+  Keep `StackcopyCLI.exe` in the same folder; the GUI uses it for imports.
 
 > **First launch of an unsigned app:** macOS may say it's from an unidentified
 > developer — right-click the app and choose **Open**, then **Open** again.
@@ -99,14 +100,16 @@ distro's `python3-tk` package on Linux; it's already included on Windows).
 ### Build the app yourself
 
 The workflow in `.github/workflows/build-gui.yml` builds both the macOS `.dmg`
-and the Windows `.exe` automatically when you push a version tag
+and the Windows bundle automatically when you push a version tag
 (`git tag v1.0.0 && git push --tags`) and attaches them to the release. To
 build locally on the matching OS:
 
 ```bash
 pip install -r requirements-gui.txt -r requirements-build.txt
 pyinstaller packaging/stackcopy_gui.spec
-# -> dist/Stackcopy.app (macOS)  or  dist/Stackcopy.exe (Windows)
+# -> dist/Stackcopy.app (macOS)
+# -> dist/Stackcopy/Stackcopy.exe + StackcopyCLI.exe (Windows)
+# -> dist/Stackcopy (Linux)
 ```
 
 PyInstaller can't cross-compile, so build the macOS app on a Mac and the
@@ -300,8 +303,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.5.5
-- **Date**: June 8, 2026
+- **Version**: 1.5.6
+- **Date**: June 9, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

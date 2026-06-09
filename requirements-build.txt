@@ -4,6 +4,6 @@
 #   pip install -r requirements-gui.txt -r requirements-build.txt
 #   pyinstaller packaging/stackcopy_gui.spec
 #
-# PyInstaller cannot cross-compile: build the .app on macOS and the .exe on
-# Windows (the GitHub Actions workflow does both automatically).
-pyinstaller>=6.6
+# PyInstaller cannot cross-compile: build the .app on macOS and the Windows
+# folder bundle on Windows (the GitHub Actions workflow does both automatically).
+pyinstaller==6.6.*

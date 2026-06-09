@@ -1,8 +1,9 @@
 # Change Log
 
-## **1.5.6 - 2026-06-08**
+## **1.5.6 - 2026-06-09**
 
 - Add a GUI that should work on Windows, MacOS and Linux. The GUI is only for the Lightroomimport workflow, which I assume is what most people want anyway.
+- Windows GUI bundles now include a console-mode `StackcopyCLI.exe` helper so imports can stream CLI output back into the windowed app.
 
 ## **1.5.5 - 2026-06-08**
 

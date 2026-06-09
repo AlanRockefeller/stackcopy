@@ -28,9 +28,10 @@ import subprocess
 # Frozen-app CLI dispatch
 # ---------------------------------------------------------------------------
 # When PyInstaller bundles this GUI, sys.executable is the app itself, not a
-# Python interpreter — so we can't shell out to "python stackcopy.py". Instead
-# the GUI relaunches *itself* with STACKCOPY_RUN_CLI=1, and this guard turns
-# that second process into the stackcopy CLI. (No effect when run from source.)
+# Python interpreter, so we can't shell out to "python stackcopy.py". Current
+# Windows bundles ship a sibling console-mode StackcopyCLI.exe for subprocess
+# imports; this guard remains as a fallback for older/non-Windows bundles that
+# relaunch the GUI executable with STACKCOPY_RUN_CLI=1.
 if os.environ.get("STACKCOPY_RUN_CLI") == "1":
     import stackcopy
 
@@ -44,6 +45,7 @@ from tkinter import filedialog, messagebox  # noqa: E402
 
 
 PROGRESS_SENTINEL = "@@SCPROGRESS"
+TERMINATE_TIMEOUT_SECONDS = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +73,15 @@ def cli_command(cli_args: list[str]) -> tuple[list[str], dict[str, str]]:
     from source and inside a PyInstaller bundle."""
     env = os.environ.copy()
     if getattr(sys, "frozen", False):
-        # Bundled: relaunch this same executable in CLI mode.
+        # Bundled Windows builds include a console-mode helper next to the GUI
+        # executable. Relaunching a windowed/no-console PyInstaller executable
+        # leaves sys.stdout/sys.stderr unavailable, so prefer the helper when
+        # present and keep self-dispatch only as a compatibility fallback.
+        helper_name = "StackcopyCLI.exe" if os.name == "nt" else "StackcopyCLI"
+        helper = os.path.join(os.path.dirname(sys.executable), helper_name)
+        if os.path.exists(helper):
+            env.pop("STACKCOPY_RUN_CLI", None)
+            return [helper, *cli_args], env
         env["STACKCOPY_RUN_CLI"] = "1"
         return [sys.executable, *cli_args], env
     # From source: run stackcopy.py next to this file with the same interpreter.
@@ -127,6 +137,7 @@ class StackcopyGUI(ctk.CTk):
         self._total = 0
         self._running = False
         self._assume_yes = False
+        self._terminated_by_user = False
         self._last_dest: str | None = None
         self._tail: list[str] = []  # recent stdout lines, for diagnosis
         self._pending: tuple[list[str], str, str] | None = None
@@ -303,12 +314,14 @@ class StackcopyGUI(ctk.CTk):
         env["PYTHONUNBUFFERED"] = "1"  # stream stdout live, not in one block
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = dst
         env["STACKCOPY_STACK_INPUT_DIR"] = stk
+        env.pop("STACKCOPY_ASSUME_YES", None)
         if self._assume_yes:
             env["STACKCOPY_ASSUME_YES"] = "1"
 
         self._last_dest = dst
         self._tail = []
         self._total = 0
+        self._terminated_by_user = False
 
         self._set_running(True)
         self.open_btn.configure(state="disabled")
@@ -400,12 +413,18 @@ class StackcopyGUI(ctk.CTk):
             self.progress.set(1.0 if total else 0)
 
     def _handle_done(self, rc: int) -> None:
+        terminated_by_user = self._terminated_by_user
+        self._terminated_by_user = False
         self._proc = None
         self.progress.stop()
+        self._set_running(False)
+
+        if terminated_by_user:
+            self.status_var.set("Cancelled.")
+            return
 
         tail = "".join(self._tail)
         if rc != 0 and "destination space is low" in tail and not self._assume_yes:
-            self._set_running(False)
             if messagebox.askyesno(
                 "Low disk space",
                 "Stackcopy reports the destination is low on free space.\n\n"
@@ -417,7 +436,6 @@ class StackcopyGUI(ctk.CTk):
                 self.status_var.set("Aborted: low disk space.")
             return
 
-        self._set_running(False)
         if rc == 0:
             self.progress.set(1.0 if self._total else 0)
             if self._total == 0:
@@ -438,10 +456,36 @@ class StackcopyGUI(ctk.CTk):
             # Each file move is atomic and the import is re-runnable, so stopping
             # between files is safe.
             self.status_var.set("Cancelling...")
+            if self._terminate_process(proc, "cancel"):
+                self.status_var.set("Cancelled.")
+
+    def _terminate_process(self, proc: subprocess.Popen, action: str) -> bool:
+        if proc.poll() is not None:
+            self._proc = None
+            return True
+        try:
+            proc.terminate()
+            proc.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            self._log_write("stackcopy did not exit after terminate; killing it.\n")
             try:
-                proc.terminate()
-            except Exception:
-                pass
+                proc.kill()
+                proc.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
+            except Exception as exc:  # noqa: BLE001 - surfaced to the user
+                self._log_write(f"Could not {action} stackcopy: {exc}\n")
+                self.status_var.set(f"Could not {action} - see log.")
+                return False
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            self._log_write(f"Could not {action} stackcopy: {exc}\n")
+            self.status_var.set(f"Could not {action} - see log.")
+            return False
+
+        if proc.poll() is None:
+            self.status_var.set(f"Could not {action} - see log.")
+            return False
+        self._proc = None
+        self._terminated_by_user = True
+        return True
 
     def _open_dest(self) -> None:
         path = self._last_dest
@@ -464,10 +508,9 @@ class StackcopyGUI(ctk.CTk):
             if not messagebox.askyesno(
                 "Quit", "An import is still running. Stop it and quit?"):
                 return
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+            self.status_var.set("Stopping import...")
+            if not self._terminate_process(proc, "stop"):
+                return
         self.destroy()
 
 
