@@ -67,9 +67,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Move-Item -Path dist/Stackcopy -Destination dist/stackcopy_tmp
-          Move-Item -Path dist/stackcopy_tmp -Destination dist/stackcopy
-          Compress-Archive -Path dist/stackcopy -DestinationPath dist/stackcopy-windows.zip -Force
+          Move-Item -Path dist/Stackcopy -Destination dist/stackcopy_build
+          Get-ChildItem -Path dist/stackcopy_build -Force | Compress-Archive -DestinationPath dist/stackcopy-windows.zip -Force
 
       - name: Upload Windows artifact
         if: runner.os == 'Windows'
