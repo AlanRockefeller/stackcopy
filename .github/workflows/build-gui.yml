@@ -1,0 +1,76 @@
+name: Build GUI apps
+
+# Builds the double-click Stackcopy GUI for macOS and Windows.
+# - Every run uploads the apps as downloadable workflow artifacts.
+# - Pushing a tag like v1.0.0 also attaches them to a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # needed to create/attach releases on tag pushes
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: Stackcopy-macOS
+          - os: windows-latest
+            artifact: Stackcopy-Windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gui.txt -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/stackcopy_gui.spec
+
+      # --- macOS: wrap the .app in a compressed .dmg ---
+      - name: Package macOS .dmg
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -volname Stackcopy \
+            -srcfolder "dist/Stackcopy.app" \
+            -ov -format UDZO "dist/Stackcopy.dmg"
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/Stackcopy.dmg
+          if-no-files-found: error
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/Stackcopy.exe
+          if-no-files-found: error
+
+      # --- attach to a GitHub Release when a tag is pushed ---
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Stackcopy.dmg
+            dist/Stackcopy.exe
+          fail_on_unmatched_files: false

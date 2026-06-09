@@ -83,6 +83,36 @@ def _warn_wsl_performance(paths: list[str], operation_desc: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Optional machine-readable progress (used by the GUI; OFF by default)
+# ---------------------------------------------------------------------------
+# When STACKCOPY_PROGRESS=1, emit one progress event per line on stderr, which
+# is otherwise unused by this program. The GUI parses these to drive a progress
+# bar. With the variable unset, nothing is emitted and CLI output is unchanged.
+
+_PROGRESS_ENABLED = os.environ.get("STACKCOPY_PROGRESS") == "1"
+_PROGRESS_SENTINEL = "@@SCPROGRESS"
+
+
+def _emit_progress(file: str | None = None, **fields: Any) -> None:
+    """Write a progress event to stderr when STACKCOPY_PROGRESS=1.
+
+    Numeric/token fields are emitted as key=value pairs; the optional *file*
+    name is emitted last (after ``file=``) so the reader can treat the rest of
+    the line as the name, even though filenames may contain spaces."""
+    if not _PROGRESS_ENABLED:
+        return
+    try:
+        parts = " ".join(f"{k}={v}" for k, v in fields.items())
+        line = f"{_PROGRESS_SENTINEL} {parts}"
+        if file is not None:
+            line += f" file={file}"
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def _default_pictures_dir() -> str:
     """Return the user's Pictures directory, respecting platform conventions."""
     if IS_WINDOWS:
@@ -137,6 +167,7 @@ else:
 # Stems with fewer digits (e.g., 4-digit counters) will not be treated as numeric sequences.
 
 NUMERIC_STEM_REGEX = re.compile(r"([a-zA-Z0-9_-]*)(\d{6,})")
+CAMERA_ROLL_DIR_REGEX = re.compile(r"^(\d{3})([A-Za-z0-9_]{5})$")
 
 
 @dataclass
@@ -191,6 +222,34 @@ def _path_is_within(path: str, root: str) -> bool:
     except ValueError:
         # Different drives (Windows) or an abs/relative mismatch -> not within.
         return False
+
+
+def _relative_dir_lookup_key(relative_dir: str) -> str:
+    """Normalize a scanned relative directory for cross-platform lookups."""
+    return os.path.normcase(os.path.normpath(relative_dir or ".")).casefold()
+
+
+def previous_adjacent_camera_dir(
+    relative_dir: str, known_relative_dirs_by_key: dict[str, str]
+) -> str | None:
+    """Return the previous sibling camera roll dir, if `relative_dir` has one."""
+    normalized = os.path.normpath(relative_dir or ".")
+    if normalized == ".":
+        return None
+
+    parent, folder = os.path.split(normalized)
+    match = CAMERA_ROLL_DIR_REGEX.fullmatch(folder)
+    if not match:
+        return None
+
+    folder_number = int(match.group(1))
+    if folder_number <= 0:
+        return None
+
+    suffix = match.group(2)
+    previous_folder = f"{folder_number - 1:03d}{suffix}"
+    previous_dir = os.path.normpath(os.path.join(parent, previous_folder))
+    return known_relative_dirs_by_key.get(_relative_dir_lookup_key(previous_dir))
 
 
 def iter_source_file_entries(src_dir: str, recursive: bool = False, exclude_dirs=()):
@@ -701,6 +760,15 @@ def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None
             print(f"  Reserve threshold:      {format_bytes(reserve_bytes)}")
 
             if not sys.stdin.isatty():
+                # The GUI sets STACKCOPY_ASSUME_YES=1 only after the user has
+                # explicitly confirmed the low-space warning in a dialog, so a
+                # headless run can proceed instead of hard-aborting.
+                if os.environ.get("STACKCOPY_ASSUME_YES") == "1":
+                    print(
+                        "Proceeding despite low space (confirmed via STACKCOPY_ASSUME_YES)."
+                    )
+                    _confirmed_filesystems.add(dev_id)
+                    continue
                 print(
                     "Refusing to proceed: destination space is low and no TTY is available to confirm."
                 )
@@ -1165,6 +1233,13 @@ def main():
         print(f"Error scanning source directory '{src_dir}': {e}")
         sys.exit(1)
 
+    known_relative_dirs_by_key = {
+        _relative_dir_lookup_key(record.get("relative_dir", ".")): record.get(
+            "relative_dir", "."
+        )
+        for record in file_db.values()
+    }
+
     sequences_by_prefix = {}
     for stem, record in file_db.items():
         numeric_info = record.get("numeric")
@@ -1175,6 +1250,36 @@ def main():
             )
     for prefix in sequences_by_prefix:
         sequences_by_prefix[prefix].sort()
+
+    def get_stack_sequence(output_record, prefix):
+        relative_dir = output_record.get("relative_dir", ".")
+        sequence_dirs = [relative_dir]
+        if scan_recursively:
+            previous_dir = previous_adjacent_camera_dir(
+                relative_dir, known_relative_dirs_by_key
+            )
+            if previous_dir:
+                sequence_dirs.insert(0, previous_dir)
+
+        sequence = []
+        sequence_dirs_with_matches = []
+        for sequence_dir in sequence_dirs:
+            dir_sequence = sequences_by_prefix.get((sequence_dir, prefix))
+            if dir_sequence:
+                sequence.extend(dir_sequence)
+                sequence_dirs_with_matches.append(sequence_dir)
+
+        if len(sequence_dirs_with_matches) == 1:
+            return sequence, sequence_dirs_with_matches
+
+        # sequence_dirs is ordered fallback-first, current-dir-last; assignment
+        # therefore keeps the current folder's frame when counters overlap.
+        stems_by_num = {}
+        for sequence_dir in sequence_dirs:
+            for num, stem in sequences_by_prefix.get((sequence_dir, prefix), ()):
+                stems_by_num[num] = stem
+        sequence = sorted(stems_by_num.items())
+        return sequence, sequence_dirs_with_matches
 
     # --- 2. Process files based on operation mode ---
 
@@ -1259,11 +1364,15 @@ def main():
 
             prefix = numeric_info["prefix"]
             output_num = numeric_info["num"]
-            sequence_key = (output_data.get("relative_dir", "."), prefix)
-            sequence = sequences_by_prefix.get(sequence_key)
+            sequence, sequence_dirs = get_stack_sequence(output_data, prefix)
 
             if args.debug_stacks:
                 print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
+                if len(sequence_dirs) > 1:
+                    print(
+                        "  - Sequence includes adjacent camera folders: "
+                        + ", ".join(sequence_dirs)
+                    )
 
             if not sequence:
                 if args.debug_stacks:
@@ -1766,6 +1875,7 @@ def main():
 
         # --- Phase F: Execute moves sequentially ---
         exec_start_time = time.perf_counter()
+        _emit_progress(phase="start", done=0, total=len(planned_moves))
         # execution_results already initialized at top of main
         for move in planned_moves:
             if move.stem not in execution_results:
@@ -1781,7 +1891,14 @@ def main():
             if move.category != "remaining":
                 execution_results[move.stem]["stack_expected"] += 1
 
-        for move in planned_moves:
+        _total_planned = len(planned_moves)
+        for _move_index, move in enumerate(planned_moves):
+            _emit_progress(
+                file=os.path.basename(move.src_path),
+                phase="move",
+                done=_move_index,
+                total=_total_planned,
+            )
             ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
 
             success, bytes_moved = safe_file_operation(
@@ -1929,6 +2046,10 @@ def main():
         if exec_start_time is not None:
             exec_elapsed_time = time.perf_counter() - exec_start_time
 
+        _emit_progress(
+            phase="done", done=len(planned_moves), total=len(planned_moves)
+        )
+
     elif args.lightroom is not None:
         # ================================================================
         # --- Lightroom Mode (non-import): existing behavior unchanged ---
@@ -1985,11 +2106,15 @@ def main():
 
             prefix = numeric_info["prefix"]
             output_num = numeric_info["num"]
-            sequence_key = (output_data.get("relative_dir", "."), prefix)
-            sequence = sequences_by_prefix.get(sequence_key)
+            sequence, sequence_dirs = get_stack_sequence(output_data, prefix)
 
             if args.debug_stacks:
                 print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
+                if len(sequence_dirs) > 1:
+                    print(
+                        "  - Sequence includes adjacent camera folders: "
+                        + ", ".join(sequence_dirs)
+                    )
 
             if not sequence:
                 if args.debug_stacks:

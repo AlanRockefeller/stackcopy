@@ -1,0 +1,6 @@
+# Runtime dependency for the Stackcopy GUI (stackcopy_gui.py).
+# The CLI (stackcopy.py) itself needs nothing beyond the Python standard library.
+#
+#   pip install -r requirements-gui.txt
+#   python stackcopy_gui.py
+customtkinter>=5.2.2

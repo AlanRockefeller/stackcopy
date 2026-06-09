@@ -38,6 +38,55 @@ py .\stackcopy.py --help
 
 **Requirements**: Python 3.10 or newer. No extra packages needed.
 
+## Graphical interface (GUI)
+
+If you'd rather not use the command line, there's a simple GUI for the
+`--lightroomimport` workflow. It asks for the source and the two destination
+folders, then shows a live log and progress bar while it works. It doesn't
+reimplement anything — under the hood it just runs `stackcopy.py` for you, so
+the part that actually moves your photos is the same tested code.
+
+### Easiest: download the app
+
+Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefeller/stackcopy/releases):
+
+- **macOS** — `Stackcopy.dmg`: open it, drag **Stackcopy** to Applications, launch it.
+- **Windows** — `Stackcopy.exe`: download and double-click. No Python required.
+
+> **First launch of an unsigned app:** macOS may say it's from an unidentified
+> developer — right-click the app and choose **Open**, then **Open** again.
+> Windows SmartScreen may warn — click **More info → Run anyway**. These
+> warnings disappear once the app is code-signed.
+
+### Run from source
+
+Works anywhere Python does (Linux, macOS, Windows):
+
+```bash
+pip install -r requirements-gui.txt
+python stackcopy_gui.py
+```
+
+The only extra dependency is `customtkinter`. If you get a `tkinter` import
+error, install Tk for your platform (`brew install python-tk` on macOS, or your
+distro's `python3-tk` package on Linux; it's already included on Windows).
+
+### Build the app yourself
+
+The workflow in `.github/workflows/build-gui.yml` builds both the macOS `.dmg`
+and the Windows `.exe` automatically when you push a version tag
+(`git tag v1.0.0 && git push --tags`) and attaches them to the release. To
+build locally on the matching OS:
+
+```bash
+pip install -r requirements-gui.txt -r requirements-build.txt
+pyinstaller packaging/stackcopy_gui.spec
+# -> dist/Stackcopy.app (macOS)  or  dist/Stackcopy.exe (Windows)
+```
+
+PyInstaller can't cross-compile, so build the macOS app on a Mac and the
+Windows app on Windows — or just let the workflow do both.
+
 ## The five modes
 
 ### `--copy SRC_DIR DEST_DIR`
