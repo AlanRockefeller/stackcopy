@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.5 by Alan Rockefeller
+# Stackcopy version 1.5.6 by Alan Rockefeller
 # 6/8/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
@@ -2046,9 +2046,7 @@ def main():
         if exec_start_time is not None:
             exec_elapsed_time = time.perf_counter() - exec_start_time
 
-        _emit_progress(
-            phase="done", done=len(planned_moves), total=len(planned_moves)
-        )
+        _emit_progress(phase="done", done=len(planned_moves), total=len(planned_moves))
 
     elif args.lightroom is not None:
         # ================================================================

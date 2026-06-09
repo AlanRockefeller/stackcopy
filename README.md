@@ -4,6 +4,8 @@ Olympus / OM-System in-camera stacking produces many RAW/JPG frames per final JP
 
 Works on Linux, macOS, WSL, and Windows.
 
+Prefer a window to the command line? There's a point-and-click [graphical interface](#graphical-interface-gui) for the import workflow.
+
 ## How it works
 
 The script finds stacked images by looking for JPG files that have no corresponding RAW file. This is the only reliable way I've found to detect which images are the stacked versions — the file sizes and EXIF data are not unique for photos created with in-camera stacking.
@@ -45,6 +47,29 @@ If you'd rather not use the command line, there's a simple GUI for the
 folders, then shows a live log and progress bar while it works. It doesn't
 reimplement anything — under the hood it just runs `stackcopy.py` for you, so
 the part that actually moves your photos is the same tested code.
+
+![The Stackcopy GUI after a completed import, showing the source and destination folders, options, progress bar, and a live log](docs/gui.png)
+
+### Using it
+
+1. **Launch it** — open the downloaded app, or run `python stackcopy_gui.py`.
+2. **Pick the source** — the folder to import from (your SD card, or its `DCIM`
+   folder). It's scanned recursively, exactly like `--lightroomimport`.
+3. **Check the destinations** — the **Lightroom destination** (where stacked
+   outputs, single shots, and videos go) and the **Stack input frames** folder
+   (where the raw frames that fed each stack go) come pre-filled with the same
+   defaults the command line uses. Click **Browse...** to change either one.
+4. **Optionally tick _Dry run_** to preview every move without touching a file —
+   the button changes to **Preview (dry run)**. Tick **Verbose log** for
+   per-file detail.
+5. **Click _Start import_.** A progress bar and live log show each file as it
+   moves, with a running `done / total` count. You can **Cancel** at any time —
+   files move one at a time and the import is re-runnable, so stopping is safe.
+   If the destination is low on space, it asks before continuing.
+6. When it finishes, **Open destination** opens your Lightroom folder.
+
+Files land in exactly the same place as the `--lightroomimport` command — see
+[Where files go](#where-files-go).
 
 ### Easiest: download the app
 
