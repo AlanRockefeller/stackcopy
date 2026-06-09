@@ -1,0 +1,100 @@
+name: Build GUI apps
+
+# Builds the double-click Stackcopy GUI for macOS and Windows.
+# - Every run uploads the apps as downloadable workflow artifacts.
+# - Pushing a tag like v1.0.0 also attaches them to a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: Stackcopy-macOS
+          - os: windows-latest
+            artifact: Stackcopy-Windows
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gui.txt -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        env:
+          STACKCOPY_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.0.0' }}
+        run: pyinstaller packaging/stackcopy_gui.spec
+
+      # --- macOS: wrap the .app in a compressed .dmg ---
+      - name: Package macOS .dmg
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -volname Stackcopy \
+            -srcfolder "dist/Stackcopy.app" \
+            -ov -format UDZO "dist/Stackcopy.dmg"
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/Stackcopy.dmg
+          if-no-files-found: error
+
+      - name: Package Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/Stackcopy -DestinationPath dist/Stackcopy-Windows.zip
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/Stackcopy-Windows.zip
+          if-no-files-found: error
+
+  release:
+    name: Attach to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      # --- attach to a GitHub Release when a tag is pushed ---
+      - name: Attach to release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: |
+            release-assets/Stackcopy.dmg
+            release-assets/Stackcopy-Windows.zip
+          fail_on_unmatched_files: true

@@ -4,6 +4,8 @@ Olympus / OM-System in-camera stacking produces many RAW/JPG frames per final JP
 
 Works on Linux, macOS, WSL, and Windows.
 
+Prefer a window to the command line? There's a point-and-click [graphical interface](#graphical-interface-gui) for the import workflow.
+
 ## How it works
 
 The script finds stacked images by looking for JPG files that have no corresponding RAW file. This is the only reliable way I've found to detect which images are the stacked versions — the file sizes and EXIF data are not unique for photos created with in-camera stacking.
@@ -37,6 +39,81 @@ py .\stackcopy.py --help
 ```
 
 **Requirements**: Python 3.10 or newer. No extra packages needed.
+
+## Graphical interface (GUI)
+
+If you'd rather not use the command line, there's a simple GUI for the
+`--lightroomimport` workflow. It asks for the source and the two destination
+folders, then shows a live log and progress bar while it works. It doesn't
+reimplement anything — under the hood it just runs `stackcopy.py` for you, so
+the part that actually moves your photos is the same tested code.
+
+![The Stackcopy GUI after a completed import, showing the source and destination folders, options, progress bar, and a live log](docs/gui.png)
+
+### Using it
+
+1. **Launch it** — open the downloaded app, or run `python stackcopy_gui.py`.
+2. **Pick the source** — the folder to import from (your SD card, or its `DCIM`
+   folder). It's scanned recursively, exactly like `--lightroomimport`.
+3. **Check the destinations** — the **Lightroom destination** (where stacked
+   outputs, single shots, and videos go) and the **Stack input frames** folder
+   (where the raw frames that fed each stack go) come pre-filled with the same
+   defaults the command line uses. Click **Browse...** to change either one.
+4. **Optionally tick _Dry run_** to preview every move without touching a file —
+   the button changes to **Preview (dry run)**. Tick **Verbose log** for
+   per-file detail.
+5. **Click _Start import_.** A progress bar and live log show each file as it
+   moves, with a running `done / total` count. You can **Cancel** at any time —
+   files move one at a time and the import is re-runnable, so stopping is safe.
+   If the destination is low on space, it asks before continuing.
+6. When it finishes, **Open destination** opens your Lightroom folder.
+
+Files land in exactly the same place as the `--lightroomimport` command — see
+[Where files go](#where-files-go).
+
+### Easiest: download the app
+
+Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefeller/stackcopy/releases):
+
+- **macOS** — `Stackcopy.dmg`: open it, drag **Stackcopy** to Applications, launch it.
+- **Windows** — `Stackcopy-Windows.zip`: unzip it, then double-click `Stackcopy.exe`.
+  Keep `StackcopyCLI.exe` in the same folder; the GUI uses it for imports.
+
+> **First launch of an unsigned app:** macOS may say it's from an unidentified
+> developer — right-click the app and choose **Open**, then **Open** again.
+> Windows SmartScreen may warn — click **More info → Run anyway**. These
+> warnings disappear once the app is code-signed.
+
+### Run from source
+
+Works anywhere Python does (Linux, macOS, Windows):
+
+```bash
+pip install -r requirements-gui.txt
+python stackcopy_gui.py
+```
+
+The only extra dependency is `customtkinter`. If you get a `tkinter` import
+error, install Tk for your platform (`brew install python-tk` on macOS, or your
+distro's `python3-tk` package on Linux; it's already included on Windows).
+
+### Build the app yourself
+
+The workflow in `.github/workflows/build-gui.yml` builds both the macOS `.dmg`
+and the Windows bundle automatically when you push a version tag
+(`git tag v1.0.0 && git push --tags`) and attaches them to the release. To
+build locally on the matching OS:
+
+```bash
+pip install -r requirements-gui.txt -r requirements-build.txt
+pyinstaller packaging/stackcopy_gui.spec
+# -> dist/Stackcopy.app (macOS)
+# -> dist/Stackcopy/Stackcopy.exe + StackcopyCLI.exe (Windows)
+# -> dist/Stackcopy (Linux)
+```
+
+PyInstaller can't cross-compile, so build the macOS app on a Mac and the
+Windows app on Windows — or just let the workflow do both.
 
 ## The five modes
 
@@ -226,8 +303,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.5.5
-- **Date**: June 8, 2026
+- **Version**: 1.5.6
+- **Date**: June 9, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
