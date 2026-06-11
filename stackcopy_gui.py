@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 import queue
 import threading
 import subprocess
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +48,8 @@ from tkinter import filedialog, messagebox  # noqa: E402
 
 PROGRESS_SENTINEL = "@@SCPROGRESS"
 TERMINATE_TIMEOUT_SECONDS = 3.0
+APP_NAME = "Stackcopy"
+SETTINGS_FILENAME = "gui-state.json"
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +123,49 @@ def _mono_family() -> str:
     return "monospace"
 
 
+def _settings_path() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / APP_NAME / SETTINGS_FILENAME
+
+
+def load_gui_state() -> dict[str, str]:
+    path = _settings_path()
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: value
+        for key, value in data.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+def save_gui_state(state: dict[str, str]) -> None:
+    path = _settings_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except Exception:
+        # Persistence is best-effort; the GUI must keep working even if the
+        # config directory is unwritable.
+        return
+
+
 # ---------------------------------------------------------------------------
 # The window
 # ---------------------------------------------------------------------------
@@ -141,6 +188,8 @@ class StackcopyGUI(ctk.CTk):
         self._last_dest: str | None = None
         self._tail: list[str] = []  # recent stdout lines, for diagnosis
         self._pending: tuple[list[str], str, str] | None = None
+        self._save_state_scheduled = False
+        self._restoring_state = False
 
         self._entries: list[ctk.CTkEntry] = []
         self._browse_btns: list[ctk.CTkButton] = []
@@ -166,6 +215,11 @@ class StackcopyGUI(ctk.CTk):
         self.src_var = ctk.StringVar()
         self.dst_var = ctk.StringVar(value=lr_default)
         self.stk_var = ctk.StringVar(value=stack_default)
+
+        self._restore_saved_defaults()
+        self.src_var.trace_add("write", self._on_settings_changed)
+        self.dst_var.trace_add("write", self._on_settings_changed)
+        self.stk_var.trace_add("write", self._on_settings_changed)
 
         self._dir_row(2, "Source (camera card)", self.src_var,
                       "Folder to import from - your SD card, or its DCIM folder")
@@ -249,6 +303,32 @@ class StackcopyGUI(ctk.CTk):
         chosen = filedialog.askdirectory(initialdir=start, title="Choose a folder")
         if chosen:
             var.set(chosen)
+
+    def _restore_saved_defaults(self) -> None:
+        saved = load_gui_state()
+        self._restoring_state = True
+        try:
+            self.src_var.set(saved.get("source_dir", ""))
+            self.dst_var.set(saved.get("lightroom_dir", self.dst_var.get()))
+            self.stk_var.set(saved.get("stack_input_dir", self.stk_var.get()))
+        finally:
+            self._restoring_state = False
+
+    def _on_settings_changed(self, *_: object) -> None:
+        if self._restoring_state:
+            return
+        if self._save_state_scheduled:
+            return
+        self._save_state_scheduled = True
+        self.after_idle(self._save_current_defaults)
+
+    def _save_current_defaults(self) -> None:
+        self._save_state_scheduled = False
+        save_gui_state({
+            "source_dir": self.src_var.get(),
+            "lightroom_dir": self.dst_var.get(),
+            "stack_input_dir": self.stk_var.get(),
+        })
 
     def _sync_start_label(self) -> None:
         if not self._running:
@@ -511,6 +591,7 @@ class StackcopyGUI(ctk.CTk):
             self.status_var.set("Stopping import...")
             if not self._terminate_process(proc, "stop"):
                 return
+        self._save_current_defaults()
         self.destroy()
 
 
