@@ -30,7 +30,9 @@ There is a simple GUI for the `--lightroomimport` workflow. It asks for the sour
 3. **Check the destinations** — the **Lightroom destination** (where stacked
    outputs, single shots, and videos go) and the **Stack input frames** folder
    (where the raw frames that fed each stack go) come pre-filled with the same
-   defaults the command line uses. Click **Browse...** to change either one.
+   defaults the command line uses. The GUI remembers the last values you used
+   and restores them the next time you open it. Click **Browse...** to change
+   either one.
 4. **Optionally check _Dry run_** to preview every move without doing anything —
    the button changes to **Preview (dry run)**. Check **Verbose log** for
    per-file detail.
@@ -299,7 +301,7 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 ## Version
 
 - **Version**: 1.5.6
-- **Date**: June 9, 2026
+- **Date**: June 10, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT
