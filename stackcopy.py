@@ -18,6 +18,7 @@ import time
 import argparse
 import re
 import errno
+import json
 from bisect import bisect_left
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -92,6 +93,8 @@ def _warn_wsl_performance(paths: list[str], operation_desc: str) -> None:
 
 _PROGRESS_ENABLED = os.environ.get("STACKCOPY_PROGRESS") == "1"
 _PROGRESS_SENTINEL = "@@SCPROGRESS"
+_LOW_SPACE_REPORTS_ENABLED = os.environ.get("STACKCOPY_LOW_SPACE_REPORT") == "1"
+_LOW_SPACE_SENTINEL = "@@SCLOWSPACE"
 
 
 def _emit_progress(file: str | None = None, **fields: Any) -> None:
@@ -110,6 +113,17 @@ def _emit_progress(file: str | None = None, **fields: Any) -> None:
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
     except (OSError, ValueError):
+        pass
+
+
+def _emit_low_space_report(report: dict[str, Any]) -> None:
+    if not _LOW_SPACE_REPORTS_ENABLED:
+        return
+    try:
+        payload = json.dumps(report, separators=(",", ":"))
+        sys.stderr.write(f"{_LOW_SPACE_SENTINEL} {payload}\n")
+        sys.stderr.flush()
+    except (OSError, TypeError, ValueError):
         pass
 
 
@@ -706,6 +720,14 @@ def estimate_required_bytes_for_ops(ops: list[tuple[str, str, str]]) -> dict[int
 _confirmed_filesystems = set()
 
 
+def _abort_low_space_without_confirmation(quiet: bool = False) -> None:
+    if not quiet:
+        print(
+            "Refusing to proceed: destination space is low and no TTY is available to confirm."
+        )
+    sys.exit(1)
+
+
 def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None:
     """
     Check if destination filesystems have enough space. Prompt user if low.
@@ -742,6 +764,36 @@ def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None
         is_low = (req_bytes > free_bytes) or (estimated_free < reserve_bytes)
 
         if is_low:
+            report = {
+                "dry_run": dry_run,
+                "sample_path": sample_path,
+                "destination": check_path,
+                "free_bytes": free_bytes,
+                "required_bytes": req_bytes,
+                "estimated_free_bytes": estimated_free,
+                "reserve_bytes": reserve_bytes,
+                "count": count,
+                "free": format_bytes(free_bytes),
+                "required": format_bytes(req_bytes),
+                "estimated_free": format_bytes(estimated_free),
+                "reserve": format_bytes(reserve_bytes),
+                "shortfall": (
+                    format_bytes(-estimated_free) if estimated_free < 0 else None
+                ),
+            }
+
+            if os.environ.get("STACKCOPY_ASSUME_YES") == "1":
+                if not _LOW_SPACE_REPORTS_ENABLED:
+                    print(
+                        "Proceeding despite low space (confirmed via STACKCOPY_ASSUME_YES)."
+                    )
+                _confirmed_filesystems.add(dev_id)
+                continue
+
+            if _LOW_SPACE_REPORTS_ENABLED:
+                _emit_low_space_report(report)
+                _abort_low_space_without_confirmation(quiet=True)
+
             header = "DRY RUN WARNING" if dry_run else "WARNING"
             print(
                 f"\n{header}: Low disk space detected on destination device for '{sample_path}'"
@@ -760,21 +812,13 @@ def confirm_if_low_space(ops: list[tuple[str, str, str]], dry_run: bool) -> None
             print(f"  Reserve threshold:      {format_bytes(reserve_bytes)}")
 
             if not sys.stdin.isatty():
-                # The GUI sets STACKCOPY_ASSUME_YES=1 only after the user has
-                # explicitly confirmed the low-space warning in a dialog, so a
-                # headless run can proceed instead of hard-aborting.
-                if os.environ.get("STACKCOPY_ASSUME_YES") == "1":
-                    print(
-                        "Proceeding despite low space (confirmed via STACKCOPY_ASSUME_YES)."
-                    )
-                    _confirmed_filesystems.add(dev_id)
-                    continue
-                print(
-                    "Refusing to proceed: destination space is low and no TTY is available to confirm."
-                )
-                sys.exit(1)
+                _abort_low_space_without_confirmation()
 
-            response = input("  Proceed anyway? [y/N] ").strip().lower()
+            try:
+                response = input("  Proceed anyway? [y/N] ").strip().lower()
+            except EOFError:
+                print()
+                _abort_low_space_without_confirmation()
             if response not in ("y", "yes"):
                 print("Aborted by user.")
                 sys.exit(1)
@@ -1847,12 +1891,12 @@ def main():
             if mtimes:
                 earliest = min(mtimes)
                 latest = max(mtimes)
-                print(f"\n  Time range:")
+                print("\n  Time range:")
                 print(f"    Earliest: {earliest.strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"    Latest:   {latest.strftime('%Y-%m-%d %H:%M:%S')}")
 
             if all_dest_dirs:
-                print(f"\n  Destinations:")
+                print("\n  Destinations:")
                 for d in all_dest_dirs:
                     print(f"    {d}")
 
