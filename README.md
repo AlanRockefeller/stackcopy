@@ -53,6 +53,9 @@ Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefelle
 - **Windows** — `stackcopy-windows.zip`: unzip it, then double-click `Stackcopy.exe`.
   Keep `StackcopyCLI.exe` in the same folder; the GUI uses it for imports.
 
+Detailed beginner install guides are in [build/INSTALL-macOS.md](build/INSTALL-macOS.md)
+and [build/INSTALL-Windows.md](build/INSTALL-Windows.md).
+
 > **First launch of an unsigned app:** macOS may say it's from an unidentified
 > developer — right-click the app and choose **Open**, then **Open** again.
 > Windows SmartScreen may warn — click **More info → Run anyway**.

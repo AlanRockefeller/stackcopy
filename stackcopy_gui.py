@@ -47,6 +47,7 @@ from tkinter import filedialog, messagebox  # noqa: E402
 
 
 PROGRESS_SENTINEL = "@@SCPROGRESS"
+LOW_SPACE_SENTINEL = "@@SCLOWSPACE"
 TERMINATE_TIMEOUT_SECONDS = 3.0
 APP_NAME = "Stackcopy"
 SETTINGS_FILENAME = "gui-state.json"
@@ -113,6 +114,39 @@ def parse_progress(line: str) -> tuple[dict[str, str], str | None]:
             key, value = tok.split("=", 1)
             fields[key] = value
     return fields, fname
+
+
+def parse_low_space_report(line: str) -> dict[str, object] | None:
+    try:
+        payload = json.loads(line[len(LOW_SPACE_SENTINEL):].strip())
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def low_space_dialog_message(report: dict[str, object] | None) -> str:
+    if not report:
+        return (
+            "Stackcopy reports the destination is low on free space.\n\n"
+            "Proceed anyway?"
+        )
+
+    count = report.get("count")
+    required_label = f"Required ({count} files)" if count is not None else "Required"
+    estimated = str(report.get("estimated_free", "unknown"))
+    shortfall = report.get("shortfall")
+    if shortfall:
+        estimated += f" (short by {shortfall})"
+
+    return (
+        "The destination may not have enough free space for this import.\n\n"
+        f"Destination:\n{report.get('destination', 'unknown')}\n\n"
+        f"Current free space: {report.get('free', 'unknown')}\n"
+        f"{required_label}: {report.get('required', 'unknown')}\n"
+        f"Estimated free after import: {estimated}\n"
+        f"Reserve threshold: {report.get('reserve', 'unknown')}\n\n"
+        "Proceed anyway?"
+    )
 
 
 def _mono_family() -> str:
@@ -187,6 +221,7 @@ class StackcopyGUI(ctk.CTk):
         self._terminated_by_user = False
         self._last_dest: str | None = None
         self._tail: list[str] = []  # recent stdout lines, for diagnosis
+        self._low_space_report: dict[str, object] | None = None
         self._pending: tuple[list[str], str, str] | None = None
         self._save_state_scheduled = False
         self._restoring_state = False
@@ -391,6 +426,7 @@ class StackcopyGUI(ctk.CTk):
         args, dst, stk = self._pending
         cmd, env = cli_command(args)
         env["STACKCOPY_PROGRESS"] = "1"
+        env["STACKCOPY_LOW_SPACE_REPORT"] = "1"
         env["PYTHONUNBUFFERED"] = "1"  # stream stdout live, not in one block
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = dst
         env["STACKCOPY_STACK_INPUT_DIR"] = stk
@@ -400,6 +436,7 @@ class StackcopyGUI(ctk.CTk):
 
         self._last_dest = dst
         self._tail = []
+        self._low_space_report = None
         self._total = 0
         self._terminated_by_user = False
 
@@ -455,6 +492,9 @@ class StackcopyGUI(ctk.CTk):
                 elif kind == "err":
                     if payload.startswith(PROGRESS_SENTINEL):
                         self._handle_progress(payload)
+                    elif payload.startswith(LOW_SPACE_SENTINEL):
+                        self._low_space_report = parse_low_space_report(payload)
+                        self.status_var.set("Low disk space - waiting for confirmation.")
                     else:
                         self._log_write(payload)
                 elif kind == "fatal":
@@ -503,12 +543,10 @@ class StackcopyGUI(ctk.CTk):
             self.status_var.set("Cancelled.")
             return
 
-        tail = "".join(self._tail)
-        if rc != 0 and "destination space is low" in tail and not self._assume_yes:
+        if rc != 0 and self._low_space_report is not None and not self._assume_yes:
             if messagebox.askyesno(
                 "Low disk space",
-                "Stackcopy reports the destination is low on free space.\n\n"
-                "Proceed anyway?",
+                low_space_dialog_message(self._low_space_report),
             ):
                 self._assume_yes = True
                 self._launch()
