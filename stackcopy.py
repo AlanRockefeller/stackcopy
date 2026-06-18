@@ -979,6 +979,8 @@ def main():
     # Add debug flag for stack detection
     parser.add_argument(
         "--debug-stacks",
+        "--debugstacks",
+        dest="debug_stacks",
         action="store_true",
         help="Enable detailed diagnostic output for stack detection",
     )
@@ -988,6 +990,12 @@ def main():
         "--interactive",
         action="store_true",
         help="Show a summary and ask for confirmation before moving files (--lightroomimport only)",
+    )
+
+    parser.add_argument(
+        "--leave-on-card",
+        action="store_true",
+        help="Copy files during --lightroomimport instead of moving them, leaving source files on the card.",
     )
 
     parser.add_argument(
@@ -1067,6 +1075,9 @@ def main():
     ):
         parser.print_help()
         sys.exit(1)
+
+    if args.leave_on_card and args.lightroomimport is None:
+        parser.error("--leave-on-card can only be used with --lightroomimport.")
 
     # Determine operation mode and set directories
     if args.copy:
@@ -1325,6 +1336,85 @@ def main():
         sequence = sorted(stems_by_num.items())
         return sequence, sequence_dirs_with_matches
 
+    def stack_detection_group_key(record):
+        """Group files for stack detection by folder and numeric filename prefix."""
+        numeric_info = record.get("numeric")
+        prefix = numeric_info["prefix"] if numeric_info else None
+        return (record.get("relative_dir", "."), prefix)
+
+    # Reliable stack detection needs RAW+JPG pairing; in groups (folder +
+    # numeric filename prefix) that have JPGs but no RAW at all, disable it.
+    # Only the Lightroom modes consume this, so skip the scan otherwise.
+    jpg_only_stack_groups = set()
+    if operation_mode in ("lightroomimport", "lightroom"):
+        groups_with_jpg = set()
+        groups_with_raw = set()
+        for record in file_db.values():
+            has_jpg = record.get("has_jpg")
+            has_raw = record.get("has_raw")
+            if not (has_jpg or has_raw):
+                continue
+            group = stack_detection_group_key(record)
+            if has_jpg:
+                groups_with_jpg.add(group)
+            if has_raw:
+                groups_with_raw.add(group)
+        for group in groups_with_jpg - groups_with_raw:
+            relative_dir, prefix = group
+            previous_dir = (
+                previous_adjacent_camera_dir(relative_dir, known_relative_dirs_by_key)
+                if scan_recursively
+                else None
+            )
+            if previous_dir and (previous_dir, prefix) in groups_with_raw:
+                continue
+            jpg_only_stack_groups.add(group)
+    warned_jpg_only_stack_groups = set()
+
+    def describe_stack_detection_group(group):
+        relative_dir, prefix = group
+        folder = src_dir if relative_dir == "." else os.path.join(src_dir, relative_dir)
+        if prefix is None:
+            return display_path(folder)
+        return f"{display_path(folder)} (filename prefix '{prefix}')"
+
+    def warn_jpg_only_stack_group(group):
+        if group in warned_jpg_only_stack_groups:
+            return
+        warned_jpg_only_stack_groups.add(group)
+        print(
+            f"Warning: JPG-only import detected in {describe_stack_detection_group(group)}: "
+            "no RAW files were found, so Stackcopy cannot reliably distinguish "
+            "in-camera stack outputs from normal JPGs or focus-bracketing bursts. "
+            "Stack detection has been disabled for this folder. All JPGs will be "
+            "imported normally. For automatic stack sorting, enable RAW+JPG in "
+            "the camera."
+        )
+
+    def find_stack_output_candidates():
+        """Return JPG-without-RAW stems, excluding JPG-only detection groups."""
+        stacked_outputs = set()
+        for stem, data in file_db.items():
+            if not (data.get("has_jpg") and not data.get("has_raw")):
+                continue
+
+            jpg_record = data["files"].get("jpg")
+            if not jpg_record:
+                continue
+
+            if target_date:
+                file_date = get_file_date(jpg_record, args.verbose)
+                if file_date is None or file_date != target_date:
+                    continue
+
+            group = stack_detection_group_key(data)
+            if group in jpg_only_stack_groups:
+                warn_jpg_only_stack_group(group)
+                continue
+
+            stacked_outputs.add(stem)
+        return stacked_outputs
+
     # --- 2. Process files based on operation mode ---
 
     if operation_mode == "lightroomimport":
@@ -1346,17 +1436,7 @@ def main():
         # --- Phase A: Detection and Planning ---
 
         # A1. Find stacked output candidates (JPG without RAW)
-        stacked_outputs = set()
-        for stem, data in file_db.items():
-            if data.get("has_jpg") and not data.get("has_raw"):
-                jpg_record = data["files"].get("jpg")
-                if not jpg_record:
-                    continue
-                if target_date:
-                    file_date = get_file_date(jpg_record, args.verbose)
-                    if file_date is None or file_date != target_date:
-                        continue
-                stacked_outputs.add(stem)
+        stacked_outputs = find_stack_output_candidates()
 
         # A2. Stack detection (same reverse-sorted walk as before)
         claimed_input_stems = set()
@@ -1825,9 +1905,20 @@ def main():
                         )
                     )
 
+        file_operation = "copy" if args.leave_on_card else "move"
+        operation_label = "copying" if args.leave_on_card else "moving"
+        planned_action_noun = "copies" if args.leave_on_card else "moves"
+        past_tense_verb = "Copied" if args.leave_on_card else "Moved"
+        # "Would copy"/"Will copy" for the plan summary, "Would copy"/"Copied"
+        # for per-file execution lines (and likewise for moves).
+        planned_verb = f"Would {file_operation}" if args.dry_run else f"Will {file_operation}"
+        done_verb = f"Would {file_operation}" if args.dry_run else past_tense_verb
+
         # --- Phase B: Disk space preflight (unified) ---
         if planned_moves:
-            ops_for_check = [(m.src_path, m.dest_path, "move") for m in planned_moves]
+            ops_for_check = [
+                (m.src_path, m.dest_path, file_operation) for m in planned_moves
+            ]
             confirm_if_low_space(ops_for_check, args.dry_run)
 
         # --- Phase C: Sort by mtime ascending ---
@@ -1848,7 +1939,7 @@ def main():
         total_rejected = stack_outputs_seen - accepted_stacks
         all_dest_dirs = sorted(set(display_path(m.dest_dir) for m in planned_moves))
 
-        verb = "Would move" if args.dry_run else "Will move"
+        verb = planned_verb
         dry_prefix = "DRY RUN: " if args.dry_run else ""
 
         print(f"\n{dry_prefix}Planned Lightroom import for '{src_dir}':")
@@ -1877,7 +1968,7 @@ def main():
         print(f"  {verb} {planned_output_count} stacked output files")
         print(f"  {verb} {planned_input_count} stack input files")
         print(f"  {verb} {planned_remaining_count} remaining files")
-        print(f"  Total planned moves:           {len(planned_moves)}")
+        print(f"  Total planned {planned_action_noun}:           {len(planned_moves)}")
 
         if skipped_missing_date or skipped_missing_at_plan:
             print()
@@ -1917,7 +2008,7 @@ def main():
                 else:
                     print("Please type y or n.")
 
-        # --- Phase F: Execute moves sequentially ---
+        # --- Phase F: Execute file operations sequentially ---
         exec_start_time = time.perf_counter()
         _emit_progress(phase="start", done=0, total=len(planned_moves))
         # execution_results already initialized at top of main
@@ -1939,17 +2030,17 @@ def main():
         for _move_index, move in enumerate(planned_moves):
             _emit_progress(
                 file=os.path.basename(move.src_path),
-                phase="move",
+                phase=file_operation,
                 done=_move_index,
                 total=_total_planned,
             )
             ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
 
             success, bytes_moved = safe_file_operation(
-                "move",
+                file_operation,
                 move.src_path,
                 move.dest_path,
-                f"moving {move.category.replace('_', ' ')} file",
+                f"{operation_label} {move.category.replace('_', ' ')} file",
                 args.force,
                 args.dry_run,
             )
@@ -1975,7 +2066,7 @@ def main():
                     remaining_moved_count += 1
 
                 if args.verbose or args.dry_run:
-                    verb = "Would move" if args.dry_run else "Moved"
+                    verb = done_verb
                     dest_short = display_path(move.dest_dir)
                     if move.basename_dest != move.basename_orig:
                         print(
@@ -2066,10 +2157,10 @@ def main():
                         dest_path = os.path.join(dest_dir_import, file_dest_basename)
 
                         success, bytes_moved = safe_file_operation(
-                            "move",
+                            file_operation,
                             file_info["path"],
                             dest_path,
-                            "moving recovered remaining file",
+                            f"{operation_label} recovered remaining file",
                             args.force,
                             args.dry_run,
                         )
@@ -2077,7 +2168,7 @@ def main():
                             total_bytes_moved += bytes_moved
                             remaining_moved_count += 1
                             if args.verbose or args.dry_run:
-                                verb = "Would move" if args.dry_run else "Moved"
+                                verb = done_verb
                                 dest_short = display_path(dest_dir_import)
                                 print(
                                     f"{verb} remaining '{file_info['basename']}' as '{file_dest_basename}' -> '{dest_short}'"
@@ -2098,17 +2189,7 @@ def main():
         # ================================================================
         input_dest_dirs = set()
         collision_notified = set()
-        stacked_outputs = set()
-        for stem, data in file_db.items():
-            if data.get("has_jpg") and not data.get("has_raw"):
-                jpg_record = data["files"].get("jpg")
-                if not jpg_record:
-                    continue
-                if target_date:
-                    file_date = get_file_date(jpg_record, args.verbose)
-                    if file_date is None or file_date != target_date:
-                        continue
-                stacked_outputs.add(stem)
+        stacked_outputs = find_stack_output_candidates()
 
         claimed_input_stems = set()
         processed_stems_for_remaining = set()
@@ -2773,7 +2854,7 @@ def main():
     if operation_mode == "lightroomimport":
         total_moved = moved_output_count + moved_input_count + remaining_moved_count
         if args.dry_run:
-            print(f"DRY RUN complete. {total_moved} files would be moved.")
+            print(f"DRY RUN complete. {total_moved} files would be {past_tense_verb.lower()}.")
         else:
             throughput_info = ""
             if total_bytes_moved > 0:
@@ -2785,8 +2866,11 @@ def main():
                     f"Data: {total_gb:.1f} GB at {mbps:.1f} MB/s average. "
                 )
 
+            import_action = "Copied" if args.leave_on_card else "Imported"
+            source_note = "Sources left in place. " if args.leave_on_card else ""
             print(
-                f"Done. Imported {total_moved} files in {exec_elapsed_time:.1f}s. "
+                f"Done. {import_action} {total_moved} files in {exec_elapsed_time:.1f}s. "
+                f"{source_note}"
                 f"Breakdown: {moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining. "
                 f"{throughput_info}Failures: {failed_count}."
             )

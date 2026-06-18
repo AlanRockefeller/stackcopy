@@ -35,11 +35,14 @@ There is a simple GUI for the `--lightroomimport` workflow. It asks for the sour
    either one.
 4. **Optionally check _Dry run_** to preview every move without doing anything —
    the button changes to **Preview (dry run)**. Check **Verbose log** for
-   per-file detail.
-5. **Click _Start import_.** A progress bar and live log show each file as it
-   moves, with a running `done / total` count. You can **Cancel** at any time —
-   files move one at a time and the import is re-runnable, so stopping is safe.
-   If the destination is low on space, it asks before continuing.
+   per-file detail, **Show stack debug output** for stack-detection diagnostics,
+   or **Leave files on card** to copy into the destination folders without
+   deleting the source files.
+5. **Click _Start import_.** A progress bar and live log show each file as it is
+   moved or copied, with a running `done / total` count. You can **Cancel** at
+   any time — files are processed one at a time and the import is re-runnable,
+   so stopping is safe. If the destination is low on space, it asks before
+   continuing.
 6. When it finishes, **Open destination** opens your Lightroom folder.
 
 Files land in exactly the same place as the `--lightroomimport` command — see
@@ -259,9 +262,10 @@ Date filters work with all modes.
 - `--dry` / `--dry-run` — Preview what would happen without making changes
 - `-v` / `--verbose` — Show detailed info about each file processed
 - `-i` / `--interactive` — Ask for confirmation before moving (`--lightroomimport` only)
+- `--leave-on-card` — Copy during `--lightroomimport` instead of moving, leaving source files in place
 - `--force` — Overwrite existing files without asking
 - `-j N` / `--jobs N` — Use N parallel workers for `--copy`, `--stackcopy`, and `--lightroom`. `--lightroomimport` always runs sequentially to preserve oldest-first order.
-- `--debug-stacks` — Show detailed diagnostics for stack detection
+- `--debug-stacks` / `--debugstacks` — Show detailed diagnostics for stack detection
 
 ## Stack detection in Lightroom modes
 
