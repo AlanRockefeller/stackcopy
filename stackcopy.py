@@ -1336,6 +1336,76 @@ def main():
         sequence = sorted(stems_by_num.items())
         return sequence, sequence_dirs_with_matches
 
+    def stack_detection_group_key(record):
+        """Group files for stack detection by folder and numeric filename prefix."""
+        numeric_info = record.get("numeric")
+        prefix = numeric_info["prefix"] if numeric_info else None
+        return (record.get("relative_dir", "."), prefix)
+
+    # Reliable stack detection needs RAW+JPG pairing; in groups (folder +
+    # numeric filename prefix) that have JPGs but no RAW at all, disable it.
+    # Only the Lightroom modes consume this, so skip the scan otherwise.
+    jpg_only_stack_groups = set()
+    if operation_mode in ("lightroomimport", "lightroom"):
+        groups_with_jpg = set()
+        groups_with_raw = set()
+        for record in file_db.values():
+            has_jpg = record.get("has_jpg")
+            has_raw = record.get("has_raw")
+            if not (has_jpg or has_raw):
+                continue
+            group = stack_detection_group_key(record)
+            if has_jpg:
+                groups_with_jpg.add(group)
+            if has_raw:
+                groups_with_raw.add(group)
+        jpg_only_stack_groups = groups_with_jpg - groups_with_raw
+    warned_jpg_only_stack_groups = set()
+
+    def describe_stack_detection_group(group):
+        relative_dir, prefix = group
+        folder = src_dir if relative_dir == "." else os.path.join(src_dir, relative_dir)
+        if prefix is None:
+            return display_path(folder)
+        return f"{display_path(folder)} (filename prefix '{prefix}')"
+
+    def warn_jpg_only_stack_group(group):
+        if group in warned_jpg_only_stack_groups:
+            return
+        warned_jpg_only_stack_groups.add(group)
+        print(
+            f"Warning: JPG-only import detected in {describe_stack_detection_group(group)}: "
+            "no RAW files were found, so Stackcopy cannot reliably distinguish "
+            "in-camera stack outputs from normal JPGs or focus-bracketing bursts. "
+            "Stack detection has been disabled for this folder. All JPGs will be "
+            "imported normally. For automatic stack sorting, enable RAW+JPG in "
+            "the camera."
+        )
+
+    def find_stack_output_candidates():
+        """Return JPG-without-RAW stems, excluding JPG-only detection groups."""
+        stacked_outputs = set()
+        for stem, data in file_db.items():
+            if not (data.get("has_jpg") and not data.get("has_raw")):
+                continue
+
+            jpg_record = data["files"].get("jpg")
+            if not jpg_record:
+                continue
+
+            if target_date:
+                file_date = get_file_date(jpg_record, args.verbose)
+                if file_date is None or file_date != target_date:
+                    continue
+
+            group = stack_detection_group_key(data)
+            if group in jpg_only_stack_groups:
+                warn_jpg_only_stack_group(group)
+                continue
+
+            stacked_outputs.add(stem)
+        return stacked_outputs
+
     # --- 2. Process files based on operation mode ---
 
     if operation_mode == "lightroomimport":
@@ -1357,17 +1427,7 @@ def main():
         # --- Phase A: Detection and Planning ---
 
         # A1. Find stacked output candidates (JPG without RAW)
-        stacked_outputs = set()
-        for stem, data in file_db.items():
-            if data.get("has_jpg") and not data.get("has_raw"):
-                jpg_record = data["files"].get("jpg")
-                if not jpg_record:
-                    continue
-                if target_date:
-                    file_date = get_file_date(jpg_record, args.verbose)
-                    if file_date is None or file_date != target_date:
-                        continue
-                stacked_outputs.add(stem)
+        stacked_outputs = find_stack_output_candidates()
 
         # A2. Stack detection (same reverse-sorted walk as before)
         claimed_input_stems = set()
@@ -1839,6 +1899,11 @@ def main():
         file_operation = "copy" if args.leave_on_card else "move"
         operation_label = "copying" if args.leave_on_card else "moving"
         planned_action_noun = "copies" if args.leave_on_card else "moves"
+        past_tense_verb = "Copied" if args.leave_on_card else "Moved"
+        # "Would copy"/"Will copy" for the plan summary, "Would copy"/"Copied"
+        # for per-file execution lines (and likewise for moves).
+        planned_verb = f"Would {file_operation}" if args.dry_run else f"Will {file_operation}"
+        done_verb = f"Would {file_operation}" if args.dry_run else past_tense_verb
 
         # --- Phase B: Disk space preflight (unified) ---
         if planned_moves:
@@ -1865,10 +1930,7 @@ def main():
         total_rejected = stack_outputs_seen - accepted_stacks
         all_dest_dirs = sorted(set(display_path(m.dest_dir) for m in planned_moves))
 
-        if args.leave_on_card:
-            verb = "Would copy" if args.dry_run else "Will copy"
-        else:
-            verb = "Would move" if args.dry_run else "Will move"
+        verb = planned_verb
         dry_prefix = "DRY RUN: " if args.dry_run else ""
 
         print(f"\n{dry_prefix}Planned Lightroom import for '{src_dir}':")
@@ -1995,10 +2057,7 @@ def main():
                     remaining_moved_count += 1
 
                 if args.verbose or args.dry_run:
-                    if args.leave_on_card:
-                        verb = "Would copy" if args.dry_run else "Copied"
-                    else:
-                        verb = "Would move" if args.dry_run else "Moved"
+                    verb = done_verb
                     dest_short = display_path(move.dest_dir)
                     if move.basename_dest != move.basename_orig:
                         print(
@@ -2100,10 +2159,7 @@ def main():
                             total_bytes_moved += bytes_moved
                             remaining_moved_count += 1
                             if args.verbose or args.dry_run:
-                                if args.leave_on_card:
-                                    verb = "Would copy" if args.dry_run else "Copied"
-                                else:
-                                    verb = "Would move" if args.dry_run else "Moved"
+                                verb = done_verb
                                 dest_short = display_path(dest_dir_import)
                                 print(
                                     f"{verb} remaining '{file_info['basename']}' as '{file_dest_basename}' -> '{dest_short}'"
@@ -2124,17 +2180,7 @@ def main():
         # ================================================================
         input_dest_dirs = set()
         collision_notified = set()
-        stacked_outputs = set()
-        for stem, data in file_db.items():
-            if data.get("has_jpg") and not data.get("has_raw"):
-                jpg_record = data["files"].get("jpg")
-                if not jpg_record:
-                    continue
-                if target_date:
-                    file_date = get_file_date(jpg_record, args.verbose)
-                    if file_date is None or file_date != target_date:
-                        continue
-                stacked_outputs.add(stem)
+        stacked_outputs = find_stack_output_candidates()
 
         claimed_input_stems = set()
         processed_stems_for_remaining = set()
@@ -2799,8 +2845,7 @@ def main():
     if operation_mode == "lightroomimport":
         total_moved = moved_output_count + moved_input_count + remaining_moved_count
         if args.dry_run:
-            action = "copied" if args.leave_on_card else "moved"
-            print(f"DRY RUN complete. {total_moved} files would be {action}.")
+            print(f"DRY RUN complete. {total_moved} files would be {past_tense_verb.lower()}.")
         else:
             throughput_info = ""
             if total_bytes_moved > 0:
