@@ -150,6 +150,58 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             )
             self.assertEqual(files_under(src), [])
 
+    def test_lightroomimport_preserves_stack_detection_across_roll_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "card"
+            previous_roll = src / "DCIM" / "100OMSYS"
+            next_roll = src / "DCIM" / "101OMSYS"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+            base_time = datetime(2026, 6, 17, 12, 0, 0)
+
+            frame_times = {
+                9997: base_time,
+                9998: base_time + timedelta(seconds=2),
+                9999: base_time + timedelta(seconds=4),
+            }
+            for number, mtime in frame_times.items():
+                write_media_file(previous_roll / f"_617{number:04d}.JPG", mtime)
+                write_media_file(previous_roll / f"_617{number:04d}.ORF", mtime)
+            write_media_file(
+                next_roll / "_6180000.JPG",
+                base_time + timedelta(seconds=10),
+            )
+
+            result = self.run_stackcopy(
+                ["--lightroomimport", str(src)], lightroom, stack_input
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("JPG-only import detected", result.stdout)
+            self.assertIn("Stacked JPG candidates found:  1", result.stdout)
+            self.assertIn("Accepted stacks:               1", result.stdout)
+            self.assertIn(
+                "Breakdown: 1 stacked outputs, 6 stack inputs, 0 remaining",
+                result.stdout,
+            )
+
+            lightroom_files = {p.name for p in files_under(lightroom)}
+            stack_files = {p.name for p in files_under(stack_input)}
+            self.assertEqual({"_6180000 stacked.JPG"}, lightroom_files)
+            self.assertEqual(
+                {
+                    "_6179997.JPG",
+                    "_6179997.ORF",
+                    "_6179998.JPG",
+                    "_6179998.ORF",
+                    "_6179999.JPG",
+                    "_6179999.ORF",
+                },
+                stack_files,
+            )
+            self.assertEqual(files_under(src), [])
+
 
 if __name__ == "__main__":
     unittest.main()

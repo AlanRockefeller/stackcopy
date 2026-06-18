@@ -1359,7 +1359,16 @@ def main():
                 groups_with_jpg.add(group)
             if has_raw:
                 groups_with_raw.add(group)
-        jpg_only_stack_groups = groups_with_jpg - groups_with_raw
+        for group in groups_with_jpg - groups_with_raw:
+            relative_dir, prefix = group
+            previous_dir = (
+                previous_adjacent_camera_dir(relative_dir, known_relative_dirs_by_key)
+                if scan_recursively
+                else None
+            )
+            if previous_dir and (previous_dir, prefix) in groups_with_raw:
+                continue
+            jpg_only_stack_groups.add(group)
     warned_jpg_only_stack_groups = set()
 
     def describe_stack_detection_group(group):
