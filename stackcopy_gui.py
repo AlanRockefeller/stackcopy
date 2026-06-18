@@ -268,12 +268,20 @@ class StackcopyGUI(ctk.CTk):
         opts.grid(row=5, column=0, sticky="w", padx=18, pady=(8, 0))
         self.dry_var = ctk.BooleanVar(value=False)
         self.verbose_var = ctk.BooleanVar(value=False)
+        self.debug_stacks_var = ctk.BooleanVar(value=False)
+        self.leave_on_card_var = ctk.BooleanVar(value=False)
         dry = ctk.CTkCheckBox(opts, text="Dry run (preview only - moves nothing)",
                               variable=self.dry_var, command=self._sync_start_label)
         dry.grid(row=0, column=0, sticky="w")
         verbose = ctk.CTkCheckBox(opts, text="Verbose log", variable=self.verbose_var)
         verbose.grid(row=0, column=1, padx=(24, 0), sticky="w")
-        self._checks += [dry, verbose]
+        debug_stacks = ctk.CTkCheckBox(
+            opts, text="Show stack debug output", variable=self.debug_stacks_var)
+        debug_stacks.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        leave_on_card = ctk.CTkCheckBox(
+            opts, text="Leave files on card", variable=self.leave_on_card_var)
+        leave_on_card.grid(row=1, column=1, padx=(24, 0), sticky="w", pady=(8, 0))
+        self._checks += [dry, verbose, debug_stacks, leave_on_card]
 
         # --- action buttons ---
         actions = ctk.CTkFrame(self, fg_color="transparent")
@@ -417,6 +425,10 @@ class StackcopyGUI(ctk.CTk):
             args.append("--dry")
         if self.verbose_var.get():
             args.append("--verbose")
+        if self.debug_stacks_var.get():
+            args.append("--debug-stacks")
+        if self.leave_on_card_var.get():
+            args.append("--leave-on-card")
         self._pending = (args, dst, stk)
         self._assume_yes = False
         self._launch()
@@ -523,12 +535,16 @@ class StackcopyGUI(ctk.CTk):
             self.status_var.set(
                 "Nothing to import - no matching files found."
                 if total == 0 else f"Importing...  0 / {total}")
-        elif phase == "move":
+        elif phase in {"move", "copy"}:
             self._total = total or self._total
             if self._total:
                 self.progress.set(done / self._total)
+            if self.dry_var.get():
+                action = "Previewing"
+            else:
+                action = "Copying" if self.leave_on_card_var.get() else "Moving"
             self.status_var.set(
-                f"Moving {fname or ''}   ({done} / {self._total})")
+                f"{action} {fname or ''}   ({done} / {self._total})")
         elif phase == "done":
             self.progress.set(1.0 if total else 0)
 
@@ -559,9 +575,10 @@ class StackcopyGUI(ctk.CTk):
             if self._total == 0:
                 self.status_var.set("Nothing to import - no matching files found.")
             elif self.dry_var.get():
-                self.status_var.set("Preview complete - nothing was moved.")
+                self.status_var.set("Preview complete - no files were changed.")
             else:
-                self.status_var.set(f"Import complete - {self._total} files moved.")
+                action = "copied" if self.leave_on_card_var.get() else "moved"
+                self.status_var.set(f"Import complete - {self._total} files {action}.")
                 self.open_btn.configure(state="normal")
         else:
             self.status_var.set(f"stackcopy exited with code {rc} - see log.")

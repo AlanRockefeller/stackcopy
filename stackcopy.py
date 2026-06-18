@@ -979,6 +979,8 @@ def main():
     # Add debug flag for stack detection
     parser.add_argument(
         "--debug-stacks",
+        "--debugstacks",
+        dest="debug_stacks",
         action="store_true",
         help="Enable detailed diagnostic output for stack detection",
     )
@@ -988,6 +990,12 @@ def main():
         "--interactive",
         action="store_true",
         help="Show a summary and ask for confirmation before moving files (--lightroomimport only)",
+    )
+
+    parser.add_argument(
+        "--leave-on-card",
+        action="store_true",
+        help="Copy files during --lightroomimport instead of moving them, leaving source files on the card.",
     )
 
     parser.add_argument(
@@ -1067,6 +1075,9 @@ def main():
     ):
         parser.print_help()
         sys.exit(1)
+
+    if args.leave_on_card and args.lightroomimport is None:
+        parser.error("--leave-on-card can only be used with --lightroomimport.")
 
     # Determine operation mode and set directories
     if args.copy:
@@ -1825,9 +1836,15 @@ def main():
                         )
                     )
 
+        file_operation = "copy" if args.leave_on_card else "move"
+        operation_label = "copying" if args.leave_on_card else "moving"
+        planned_action_noun = "copies" if args.leave_on_card else "moves"
+
         # --- Phase B: Disk space preflight (unified) ---
         if planned_moves:
-            ops_for_check = [(m.src_path, m.dest_path, "move") for m in planned_moves]
+            ops_for_check = [
+                (m.src_path, m.dest_path, file_operation) for m in planned_moves
+            ]
             confirm_if_low_space(ops_for_check, args.dry_run)
 
         # --- Phase C: Sort by mtime ascending ---
@@ -1848,7 +1865,10 @@ def main():
         total_rejected = stack_outputs_seen - accepted_stacks
         all_dest_dirs = sorted(set(display_path(m.dest_dir) for m in planned_moves))
 
-        verb = "Would move" if args.dry_run else "Will move"
+        if args.leave_on_card:
+            verb = "Would copy" if args.dry_run else "Will copy"
+        else:
+            verb = "Would move" if args.dry_run else "Will move"
         dry_prefix = "DRY RUN: " if args.dry_run else ""
 
         print(f"\n{dry_prefix}Planned Lightroom import for '{src_dir}':")
@@ -1877,7 +1897,7 @@ def main():
         print(f"  {verb} {planned_output_count} stacked output files")
         print(f"  {verb} {planned_input_count} stack input files")
         print(f"  {verb} {planned_remaining_count} remaining files")
-        print(f"  Total planned moves:           {len(planned_moves)}")
+        print(f"  Total planned {planned_action_noun}:           {len(planned_moves)}")
 
         if skipped_missing_date or skipped_missing_at_plan:
             print()
@@ -1917,7 +1937,7 @@ def main():
                 else:
                     print("Please type y or n.")
 
-        # --- Phase F: Execute moves sequentially ---
+        # --- Phase F: Execute file operations sequentially ---
         exec_start_time = time.perf_counter()
         _emit_progress(phase="start", done=0, total=len(planned_moves))
         # execution_results already initialized at top of main
@@ -1939,17 +1959,17 @@ def main():
         for _move_index, move in enumerate(planned_moves):
             _emit_progress(
                 file=os.path.basename(move.src_path),
-                phase="move",
+                phase=file_operation,
                 done=_move_index,
                 total=_total_planned,
             )
             ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
 
             success, bytes_moved = safe_file_operation(
-                "move",
+                file_operation,
                 move.src_path,
                 move.dest_path,
-                f"moving {move.category.replace('_', ' ')} file",
+                f"{operation_label} {move.category.replace('_', ' ')} file",
                 args.force,
                 args.dry_run,
             )
@@ -1975,7 +1995,10 @@ def main():
                     remaining_moved_count += 1
 
                 if args.verbose or args.dry_run:
-                    verb = "Would move" if args.dry_run else "Moved"
+                    if args.leave_on_card:
+                        verb = "Would copy" if args.dry_run else "Copied"
+                    else:
+                        verb = "Would move" if args.dry_run else "Moved"
                     dest_short = display_path(move.dest_dir)
                     if move.basename_dest != move.basename_orig:
                         print(
@@ -2066,10 +2089,10 @@ def main():
                         dest_path = os.path.join(dest_dir_import, file_dest_basename)
 
                         success, bytes_moved = safe_file_operation(
-                            "move",
+                            file_operation,
                             file_info["path"],
                             dest_path,
-                            "moving recovered remaining file",
+                            f"{operation_label} recovered remaining file",
                             args.force,
                             args.dry_run,
                         )
@@ -2077,7 +2100,10 @@ def main():
                             total_bytes_moved += bytes_moved
                             remaining_moved_count += 1
                             if args.verbose or args.dry_run:
-                                verb = "Would move" if args.dry_run else "Moved"
+                                if args.leave_on_card:
+                                    verb = "Would copy" if args.dry_run else "Copied"
+                                else:
+                                    verb = "Would move" if args.dry_run else "Moved"
                                 dest_short = display_path(dest_dir_import)
                                 print(
                                     f"{verb} remaining '{file_info['basename']}' as '{file_dest_basename}' -> '{dest_short}'"
@@ -2773,7 +2799,8 @@ def main():
     if operation_mode == "lightroomimport":
         total_moved = moved_output_count + moved_input_count + remaining_moved_count
         if args.dry_run:
-            print(f"DRY RUN complete. {total_moved} files would be moved.")
+            action = "copied" if args.leave_on_card else "moved"
+            print(f"DRY RUN complete. {total_moved} files would be {action}.")
         else:
             throughput_info = ""
             if total_bytes_moved > 0:
@@ -2785,8 +2812,11 @@ def main():
                     f"Data: {total_gb:.1f} GB at {mbps:.1f} MB/s average. "
                 )
 
+            import_action = "Copied" if args.leave_on_card else "Imported"
+            source_note = "Sources left in place. " if args.leave_on_card else ""
             print(
-                f"Done. Imported {total_moved} files in {exec_elapsed_time:.1f}s. "
+                f"Done. {import_action} {total_moved} files in {exec_elapsed_time:.1f}s. "
+                f"{source_note}"
                 f"Breakdown: {moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining. "
                 f"{throughput_info}Failures: {failed_count}."
             )
