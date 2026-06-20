@@ -266,6 +266,8 @@ Date filters work with all modes.
 - `--force` — Overwrite existing files without asking
 - `-j N` / `--jobs N` — Use N parallel workers for `--copy`, `--stackcopy`, and `--lightroom`. `--lightroomimport` always runs sequentially to preserve oldest-first order.
 - `--debug-stacks` / `--debugstacks` — Show detailed diagnostics for stack detection
+- `--no-stack-detection` — Import Lightroom-mode files without automatic stack sorting
+- `--version` — Show the installed Stackcopy version
 
 ## Stack detection in Lightroom modes
 
@@ -307,8 +309,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.5.6
-- **Date**: June 10, 2026
+- **Version**: 1.5.7
+- **Date**: June 19, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

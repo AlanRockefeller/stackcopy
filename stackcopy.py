@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.6 by Alan Rockefeller
-# 6/8/26
+# Stackcopy version 1.5.7 by Alan Rockefeller
+# 6/19/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any
+
+STACKCOPY_VERSION = "1.5.7"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -872,6 +874,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Process JPG files without corresponding raw files"
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"Stackcopy {STACKCOPY_VERSION}",
+    )
 
     # Create a mutually exclusive group for the three operation modes
     mode_group = parser.add_mutually_exclusive_group()
@@ -986,6 +993,12 @@ def main():
     )
 
     parser.add_argument(
+        "--no-stack-detection",
+        action="store_true",
+        help="Skip automatic stack detection in --lightroom and --lightroomimport.",
+    )
+
+    parser.add_argument(
         "-i",
         "--interactive",
         action="store_true",
@@ -1016,6 +1029,7 @@ def main():
     moved_output_count = 0
     stack_outputs_seen = 0
     remaining_moved_count = 0
+    inputs_not_all_raw_backed_skipped = 0
     total_bytes_moved = 0
     exec_start_time = None
     exec_elapsed_time = 0
@@ -1023,6 +1037,9 @@ def main():
     execution_results: dict[str, dict] = {}
 
     args = parser.parse_args()
+
+    if args.debug_stacks:
+        print(f"Running Stackcopy from: {os.path.abspath(__file__)}")
 
     if args.jobs < 1:
         parser.error("--jobs must be at least 1.")
@@ -1078,6 +1095,15 @@ def main():
 
     if args.leave_on_card and args.lightroomimport is None:
         parser.error("--leave-on-card can only be used with --lightroomimport.")
+
+    if (
+        args.no_stack_detection
+        and args.lightroom is None
+        and args.lightroomimport is None
+    ):
+        parser.error(
+            "--no-stack-detection can only be used with --lightroom or --lightroomimport."
+        )
 
     # Determine operation mode and set directories
     if args.copy:
@@ -1391,8 +1417,37 @@ def main():
             "the camera."
         )
 
+    warned_inputs_not_all_raw_backed_dirs = set()
+
+    def describe_stack_detection_folder(record):
+        relative_dir = record.get("relative_dir", ".")
+        folder = src_dir if relative_dir == "." else os.path.join(src_dir, relative_dir)
+        return display_path(folder)
+
+    def warn_inputs_not_all_raw_backed(record):
+        relative_dir = record.get("relative_dir", ".")
+        if relative_dir in warned_inputs_not_all_raw_backed_dirs:
+            return
+        warned_inputs_not_all_raw_backed_dirs.add(relative_dir)
+        print(
+            "Stack detection skipped in "
+            f"{describe_stack_detection_folder(record)}: inferred input frames "
+            "are not all RAW-backed. Enable RAW+JPG for "
+            "automatic stack sorting."
+        )
+
+    def inferred_inputs_are_raw_backed(input_stems):
+        return bool(input_stems) and all(
+            file_db[input_stem].get("has_raw") for input_stem in input_stems
+        )
+
     def find_stack_output_candidates():
         """Return JPG-without-RAW stems, excluding JPG-only detection groups."""
+        if args.no_stack_detection:
+            if args.debug_stacks:
+                print("Stack detection disabled by --no-stack-detection.")
+            return set()
+
         stacked_outputs = set()
         for stem, data in file_db.items():
             if not (data.get("has_jpg") and not data.get("has_raw")):
@@ -1645,10 +1700,24 @@ def main():
                                 f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start."
                             )
 
+            input_frames_are_raw_backed = inferred_inputs_are_raw_backed(
+                potential_inputs
+            )
+            inputs_not_all_raw_backed = bool(potential_inputs) and not (
+                input_frames_are_raw_backed
+            )
+            if inputs_not_all_raw_backed:
+                inputs_not_all_raw_backed_skipped += 1
+                warn_inputs_not_all_raw_backed(output_data)
+                if args.debug_stacks:
+                    print(
+                        "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
+                    )
+
             # Final decision on the stack
             is_valid_stack = (
                 3 <= len(potential_inputs) <= 15
-            ) and not too_many_in_burst
+            ) and not too_many_in_burst and not inputs_not_all_raw_backed
 
             if args.debug_stacks:
                 print(
@@ -1662,10 +1731,14 @@ def main():
                     print(
                         "    - Reason: Burst safety check failed (likely a focus bracket)."
                     )
+                if inputs_not_all_raw_backed:
+                    print("    - Reason: Inferred input frames are not all RAW-backed.")
                 print("--- End Debugging Stack ---")
 
             if not is_valid_stack:
-                if not (3 <= len(potential_inputs) <= 15):
+                if not inputs_not_all_raw_backed and not (
+                    3 <= len(potential_inputs) <= 15
+                ):
                     rejected_too_few_inputs += 1
                 if too_many_in_burst:
                     rejected_burst_safety += 1
@@ -1949,6 +2022,9 @@ def main():
         print(f"  Evaluated as potential stacks:  {stack_outputs_seen}")
         print(f"  Accepted stacks:               {accepted_stacks}")
         print(f"  Rejected stack candidates:     {total_rejected}")
+        print(
+            f"  Input sequences not all RAW-backed skipped: {inputs_not_all_raw_backed_skipped}"
+        )
 
         if args.debug_stacks and total_rejected > 0:
             print("    Rejection breakdown:")
@@ -1964,6 +2040,10 @@ def main():
                 print(f"      Too few inputs:            {rejected_too_few_inputs}")
             if rejected_burst_safety:
                 print(f"      Burst safety:              {rejected_burst_safety}")
+            if inputs_not_all_raw_backed_skipped:
+                print(
+                    f"      Inputs not all RAW-backed: {inputs_not_all_raw_backed_skipped}"
+                )
 
         print(f"  {verb} {planned_output_count} stacked output files")
         print(f"  {verb} {planned_input_count} stack input files")
@@ -2382,9 +2462,23 @@ def main():
                                 f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start."
                             )
 
+            input_frames_are_raw_backed = inferred_inputs_are_raw_backed(
+                potential_inputs
+            )
+            inputs_not_all_raw_backed = bool(potential_inputs) and not (
+                input_frames_are_raw_backed
+            )
+            if inputs_not_all_raw_backed:
+                inputs_not_all_raw_backed_skipped += 1
+                warn_inputs_not_all_raw_backed(output_data)
+                if args.debug_stacks:
+                    print(
+                        "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
+                    )
+
             is_valid_stack = (
                 3 <= len(potential_inputs) <= 15
-            ) and not too_many_in_burst
+            ) and not too_many_in_burst and not inputs_not_all_raw_backed
 
             if args.debug_stacks:
                 print(
@@ -2398,6 +2492,8 @@ def main():
                     print(
                         "    - Reason: Burst safety check failed (likely a focus bracket)."
                     )
+                if inputs_not_all_raw_backed:
+                    print("    - Reason: Inferred input frames are not all RAW-backed.")
                 print("--- End Debugging Stack ---")
 
             if is_valid_stack:
@@ -2886,6 +2982,9 @@ def main():
                 f"{prefix_info} in '{src_dir}' (renaming {processed_count} of them)."
             )
             print(
+                f"Input sequences not all RAW-backed skipped: {inputs_not_all_raw_backed_skipped}"
+            )
+            print(
                 f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) to:"
             )
             for d in sorted(input_dest_dirs):
@@ -2909,6 +3008,9 @@ def main():
             print(
                 f"\nDone. Processed {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renamed {processed_count})."
+            )
+            print(
+                f"Input sequences not all RAW-backed skipped: {inputs_not_all_raw_backed_skipped}"
             )
             print(f"Moved {moved_input_count} input files (JPG and ORF) to:")
             for d in sorted(input_dest_dirs):

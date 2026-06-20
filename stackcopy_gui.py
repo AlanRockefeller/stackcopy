@@ -268,6 +268,7 @@ class StackcopyGUI(ctk.CTk):
         opts.grid(row=5, column=0, sticky="w", padx=18, pady=(8, 0))
         self.dry_var = ctk.BooleanVar(value=False)
         self.verbose_var = ctk.BooleanVar(value=False)
+        self.detect_stacks_var = ctk.BooleanVar(value=True)
         self.debug_stacks_var = ctk.BooleanVar(value=False)
         self.leave_on_card_var = ctk.BooleanVar(value=False)
         dry = ctk.CTkCheckBox(opts, text="Dry run (preview only - moves nothing)",
@@ -275,13 +276,16 @@ class StackcopyGUI(ctk.CTk):
         dry.grid(row=0, column=0, sticky="w")
         verbose = ctk.CTkCheckBox(opts, text="Verbose log", variable=self.verbose_var)
         verbose.grid(row=0, column=1, padx=(24, 0), sticky="w")
+        detect_stacks = ctk.CTkCheckBox(
+            opts, text="Detect stacks", variable=self.detect_stacks_var)
+        detect_stacks.grid(row=1, column=0, sticky="w", pady=(8, 0))
         debug_stacks = ctk.CTkCheckBox(
             opts, text="Show stack debug output", variable=self.debug_stacks_var)
-        debug_stacks.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        debug_stacks.grid(row=1, column=1, padx=(24, 0), sticky="w", pady=(8, 0))
         leave_on_card = ctk.CTkCheckBox(
             opts, text="Leave files on card", variable=self.leave_on_card_var)
-        leave_on_card.grid(row=1, column=1, padx=(24, 0), sticky="w", pady=(8, 0))
-        self._checks += [dry, verbose, debug_stacks, leave_on_card]
+        leave_on_card.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self._checks += [dry, verbose, detect_stacks, debug_stacks, leave_on_card]
 
         # --- action buttons ---
         actions = ctk.CTkFrame(self, fg_color="transparent")
@@ -425,6 +429,8 @@ class StackcopyGUI(ctk.CTk):
             args.append("--dry")
         if self.verbose_var.get():
             args.append("--verbose")
+        if not self.detect_stacks_var.get():
+            args.append("--no-stack-detection")
         if self.debug_stacks_var.get():
             args.append("--debug-stacks")
         if self.leave_on_card_var.get():
