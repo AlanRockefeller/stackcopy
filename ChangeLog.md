@@ -1,5 +1,11 @@
 # Change Log
 
+## **1.5.7 - 2026-06-19**
+
+- Added `--version` so installed copies can report their exact Stackcopy version.
+- Clarified stack-detection warnings when inferred input frames are not all RAW-backed.
+- Documented the stack-detection control flags and updated release metadata.
+
 ## **1.5.6 - 2026-06-10**
 
 - Add a GUI that should work on Windows, macOS and Linux. The GUI is only for the Lightroomimport workflow, which I assume is what most people want anyway.

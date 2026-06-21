@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.6 by Alan Rockefeller
-# 6/8/26
+# Stackcopy version 1.5.7 by Alan Rockefeller
+# 6/19/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any
+
+STACKCOPY_VERSION = "1.5.7"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -182,6 +184,13 @@ else:
 
 NUMERIC_STEM_REGEX = re.compile(r"([a-zA-Z0-9_-]*)(\d{6,})")
 CAMERA_ROLL_DIR_REGEX = re.compile(r"^(\d{3})([A-Za-z0-9_]{5})$")
+
+# Stack-detection timing/burst thresholds (shared by the --lightroomimport and
+# --lightroom backward-scan passes).
+MAX_OUTPUT_LAG_SECONDS = 120
+MAX_INPUT_GAP_SECONDS = 6
+MAX_BURST_GAP_SECONDS = 2.0
+BURST_EXTRA_FRAMES_REQUIRED = 3
 
 
 @dataclass
@@ -872,6 +881,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Process JPG files without corresponding raw files"
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"Stackcopy {STACKCOPY_VERSION}",
+    )
 
     # Create a mutually exclusive group for the three operation modes
     mode_group = parser.add_mutually_exclusive_group()
@@ -986,6 +1000,12 @@ def main():
     )
 
     parser.add_argument(
+        "--no-stack-detection",
+        action="store_true",
+        help="Skip automatic stack detection in --lightroom and --lightroomimport.",
+    )
+
+    parser.add_argument(
         "-i",
         "--interactive",
         action="store_true",
@@ -1016,6 +1036,7 @@ def main():
     moved_output_count = 0
     stack_outputs_seen = 0
     remaining_moved_count = 0
+    inputs_not_all_raw_backed_skipped = 0
     total_bytes_moved = 0
     exec_start_time = None
     exec_elapsed_time = 0
@@ -1023,6 +1044,9 @@ def main():
     execution_results: dict[str, dict] = {}
 
     args = parser.parse_args()
+
+    if args.debug_stacks:
+        print(f"Running Stackcopy from: {os.path.abspath(__file__)}")
 
     if args.jobs < 1:
         parser.error("--jobs must be at least 1.")
@@ -1078,6 +1102,15 @@ def main():
 
     if args.leave_on_card and args.lightroomimport is None:
         parser.error("--leave-on-card can only be used with --lightroomimport.")
+
+    if (
+        args.no_stack_detection
+        and args.lightroom is None
+        and args.lightroomimport is None
+    ):
+        parser.error(
+            "--no-stack-detection can only be used with --lightroom or --lightroomimport."
+        )
 
     # Determine operation mode and set directories
     if args.copy:
@@ -1391,8 +1424,37 @@ def main():
             "the camera."
         )
 
+    warned_inputs_not_all_raw_backed_dirs = set()
+
+    def describe_stack_detection_folder(record):
+        relative_dir = record.get("relative_dir", ".")
+        folder = src_dir if relative_dir == "." else os.path.join(src_dir, relative_dir)
+        return display_path(folder)
+
+    def warn_inputs_not_all_raw_backed(record):
+        relative_dir = record.get("relative_dir", ".")
+        if relative_dir in warned_inputs_not_all_raw_backed_dirs:
+            return
+        warned_inputs_not_all_raw_backed_dirs.add(relative_dir)
+        print(
+            "Stack detection skipped in "
+            f"{describe_stack_detection_folder(record)}: inferred input frames "
+            "are not all RAW-backed. Enable RAW+JPG for "
+            "automatic stack sorting."
+        )
+
+    def inferred_inputs_are_raw_backed(input_stems):
+        return bool(input_stems) and all(
+            file_db[input_stem].get("has_raw") for input_stem in input_stems
+        )
+
     def find_stack_output_candidates():
         """Return JPG-without-RAW stems, excluding JPG-only detection groups."""
+        if args.no_stack_detection:
+            if args.debug_stacks:
+                print("Stack detection disabled by --no-stack-detection.")
+            return set()
+
         stacked_outputs = set()
         for stem, data in file_db.items():
             if not (data.get("has_jpg") and not data.get("has_raw")):
@@ -1414,6 +1476,171 @@ def main():
 
             stacked_outputs.add(stem)
         return stacked_outputs
+
+    def scan_stack_inputs(
+        sequence, idx, output_num, output_mtime, output_data, claimed_input_stems
+    ):
+        """Backward-scan from a stacked-output candidate to collect its inputs.
+
+        Walks the numeric sequence backwards from ``idx`` collecting contiguous,
+        time-adjacent, RAW-backed frames as stack inputs, applies the burst-safety
+        guard, and reports whether the inferred inputs are all RAW-backed. Shared
+        by the --lightroomimport and --lightroom stack-detection passes.
+
+        ``output_mtime`` must be non-None. Returns
+        ``(potential_inputs, too_many_in_burst, inputs_not_all_raw_backed)``.
+        """
+        nonlocal inputs_not_all_raw_backed_skipped
+
+        potential_inputs = []
+        expected_num = output_num - 1
+        current_index = idx - 1
+        hit_input_cap = False
+        stop_reason = "None"
+
+        if args.debug_stacks:
+            print("  - Scanning for Input frames (backward from output number):")
+
+        prev_mtime = output_mtime
+        allowed_gap = MAX_OUTPUT_LAG_SECONDS
+        gap_type = "output_lag"
+
+        while current_index >= 0 and len(potential_inputs) < 15:
+            candidate_num, candidate_stem = sequence[current_index]
+            candidate_record = file_db[candidate_stem]
+
+            if candidate_num != expected_num:
+                stop_reason = f"Number mismatch (expected {expected_num}, found {candidate_num})"
+                if args.debug_stacks:
+                    print(
+                        f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                    )
+                break
+
+            if candidate_stem in claimed_input_stems:
+                stop_reason = "Already claimed by another stack"
+                if args.debug_stacks:
+                    print(
+                        f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                    )
+                break
+
+            if not (
+                candidate_record.get("has_raw") or candidate_record.get("has_jpg")
+            ):
+                stop_reason = "No corresponding RAW or JPG file found"
+                if args.debug_stacks:
+                    print(
+                        f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                    )
+                break
+
+            if not candidate_record.get("has_raw") and len(potential_inputs) >= 3:
+                stop_reason = "Non-RAW-backed boundary after sufficient inputs"
+                if args.debug_stacks:
+                    print(
+                        f"    - Input '{candidate_stem}': STOPPED ({stop_reason})"
+                    )
+                break
+
+            input_mtime = get_stem_mtime(candidate_record, args.verbose)
+
+            has_valid_raw_mtime = False
+            if candidate_record.get("has_raw"):
+                raw_mtime_val = get_file_mtime(
+                    candidate_record["files"]["raw"], False
+                )
+                if raw_mtime_val:
+                    has_valid_raw_mtime = True
+
+            mtime_source = "RAW" if has_valid_raw_mtime else "JPG"
+
+            if not input_mtime or not prev_mtime:
+                time_gap = float("inf")
+            else:
+                time_gap = abs((prev_mtime - input_mtime).total_seconds())
+
+            if time_gap > allowed_gap:
+                stop_reason = f"Time gap too large ({time_gap:.2f}s > {allowed_gap}s, type: {gap_type})"
+                if args.debug_stacks:
+                    print(
+                        f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
+                    )
+                break
+
+            if args.debug_stacks:
+                print(
+                    f"    - Input '{candidate_stem}': ACCEPTED (mtime source: {mtime_source}, {gap_type} gap={time_gap:.2f}s <= {allowed_gap}s)"
+                )
+
+            prev_mtime = input_mtime
+            allowed_gap = MAX_INPUT_GAP_SECONDS
+            gap_type = "input_gap"
+
+            potential_inputs.append(candidate_stem)
+            expected_num -= 1
+            current_index -= 1
+
+        if len(potential_inputs) == 15:
+            hit_input_cap = True
+            if args.debug_stacks:
+                print("  - Note: Reached 15-frame input cap.")
+
+        # Burst safety check
+        too_many_in_burst = False
+        if potential_inputs and hit_input_cap:
+            burst_probe_stems = []
+            probe_index = current_index
+            probe_expected_num = expected_num
+
+            while (
+                probe_index >= 0
+                and len(burst_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED
+            ):
+                probe_num, probe_stem = sequence[probe_index]
+                if probe_num != probe_expected_num:
+                    break
+                burst_probe_stems.append(probe_stem)
+                probe_expected_num -= 1
+                probe_index -= 1
+
+            if len(burst_probe_stems) >= BURST_EXTRA_FRAMES_REQUIRED:
+                first_input_stem = potential_inputs[-1]
+                first_input_mtime = get_stem_mtime(
+                    file_db[first_input_stem], args.verbose
+                )
+
+                all_in_burst_gap = True
+                for probe_stem in burst_probe_stems:
+                    probe_mtime = get_stem_mtime(file_db[probe_stem], args.verbose)
+                    if not first_input_mtime or not probe_mtime:
+                        all_in_burst_gap = False
+                        break
+                    gap = abs((first_input_mtime - probe_mtime).total_seconds())
+                    if gap > MAX_BURST_GAP_SECONDS:
+                        all_in_burst_gap = False
+                        break
+
+                if all_in_burst_gap:
+                    too_many_in_burst = True
+                    if args.debug_stacks:
+                        print(
+                            f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start."
+                        )
+
+        input_frames_are_raw_backed = inferred_inputs_are_raw_backed(potential_inputs)
+        inputs_not_all_raw_backed = bool(potential_inputs) and not (
+            input_frames_are_raw_backed
+        )
+        if inputs_not_all_raw_backed:
+            inputs_not_all_raw_backed_skipped += 1
+            warn_inputs_not_all_raw_backed(output_data)
+            if args.debug_stacks:
+                print(
+                    "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
+                )
+
+        return potential_inputs, too_many_in_burst, inputs_not_all_raw_backed
 
     # --- 2. Process files based on operation mode ---
 
@@ -1441,11 +1668,6 @@ def main():
         # A2. Stack detection (same reverse-sorted walk as before)
         claimed_input_stems = set()
         processed_stems_for_remaining = set()
-
-        MAX_OUTPUT_LAG_SECONDS = 120
-        MAX_INPUT_GAP_SECONDS = 6
-        MAX_BURST_GAP_SECONDS = 2.0
-        BURST_EXTRA_FRAMES_REQUIRED = 3
 
         planned_moves: list[PlannedMove] = []
         accepted_stacks = 0
@@ -1511,144 +1733,27 @@ def main():
                 rejected_first_in_sequence += 1
                 continue
 
-            potential_inputs = []
-            expected_num = output_num - 1
-            current_index = idx - 1
-            hit_input_cap = False
-            stop_reason = "None"
-
-            if args.debug_stacks:
-                print("  - Scanning for Input frames (backward from output number):")
-
-            prev_mtime = output_mtime
             if output_mtime is None:
                 if args.debug_stacks:
                     print("  - Stack REJECTED: Output mtime is missing.")
                 rejected_no_mtime += 1
                 continue
 
-            allowed_gap = MAX_OUTPUT_LAG_SECONDS
-            gap_type = "output_lag"
-
-            while current_index >= 0 and len(potential_inputs) < 15:
-                candidate_num, candidate_stem = sequence[current_index]
-                candidate_record = file_db[candidate_stem]
-
-                if candidate_num != expected_num:
-                    stop_reason = f"Number mismatch (expected {expected_num}, found {candidate_num})"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                if candidate_stem in claimed_input_stems:
-                    stop_reason = "Already claimed by another stack"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                if not (
-                    candidate_record.get("has_raw") or candidate_record.get("has_jpg")
-                ):
-                    stop_reason = "No corresponding RAW or JPG file found"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                input_mtime = get_stem_mtime(candidate_record, args.verbose)
-
-                has_valid_raw_mtime = False
-                if candidate_record.get("has_raw"):
-                    raw_mtime_val = get_file_mtime(
-                        candidate_record["files"]["raw"], False
-                    )
-                    if raw_mtime_val:
-                        has_valid_raw_mtime = True
-
-                mtime_source = "RAW" if has_valid_raw_mtime else "JPG"
-
-                if not input_mtime or not prev_mtime:
-                    time_gap = float("inf")
-                else:
-                    time_gap = abs((prev_mtime - input_mtime).total_seconds())
-
-                if time_gap > allowed_gap:
-                    stop_reason = f"Time gap too large ({time_gap:.2f}s > {allowed_gap}s, type: {gap_type})"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                if args.debug_stacks:
-                    print(
-                        f"    - Input '{candidate_stem}': ACCEPTED (mtime source: {mtime_source}, {gap_type} gap={time_gap:.2f}s <= {allowed_gap}s)"
-                    )
-
-                prev_mtime = input_mtime
-                allowed_gap = MAX_INPUT_GAP_SECONDS
-                gap_type = "input_gap"
-
-                potential_inputs.append(candidate_stem)
-                expected_num -= 1
-                current_index -= 1
-
-            if len(potential_inputs) == 15:
-                hit_input_cap = True
-                if args.debug_stacks:
-                    print("  - Note: Reached 15-frame input cap.")
-
-            # Burst safety check
-            too_many_in_burst = False
-            if potential_inputs and hit_input_cap:
-                burst_probe_stems = []
-                probe_index = current_index
-                probe_expected_num = expected_num
-
-                while (
-                    probe_index >= 0
-                    and len(burst_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED
-                ):
-                    probe_num, probe_stem = sequence[probe_index]
-                    if probe_num != probe_expected_num:
-                        break
-                    burst_probe_stems.append(probe_stem)
-                    probe_expected_num -= 1
-                    probe_index -= 1
-
-                if len(burst_probe_stems) >= BURST_EXTRA_FRAMES_REQUIRED:
-                    first_input_stem = potential_inputs[-1]
-                    first_input_mtime = get_stem_mtime(
-                        file_db[first_input_stem], args.verbose
-                    )
-
-                    all_in_burst_gap = True
-                    for probe_stem in burst_probe_stems:
-                        probe_mtime = get_stem_mtime(file_db[probe_stem], args.verbose)
-                        if not first_input_mtime or not probe_mtime:
-                            all_in_burst_gap = False
-                            break
-                        gap = abs((first_input_mtime - probe_mtime).total_seconds())
-                        if gap > MAX_BURST_GAP_SECONDS:
-                            all_in_burst_gap = False
-                            break
-
-                    if all_in_burst_gap:
-                        too_many_in_burst = True
-                        if args.debug_stacks:
-                            print(
-                                f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start."
-                            )
+            potential_inputs, too_many_in_burst, inputs_not_all_raw_backed = (
+                scan_stack_inputs(
+                    sequence,
+                    idx,
+                    output_num,
+                    output_mtime,
+                    output_data,
+                    claimed_input_stems,
+                )
+            )
 
             # Final decision on the stack
             is_valid_stack = (
                 3 <= len(potential_inputs) <= 15
-            ) and not too_many_in_burst
+            ) and not too_many_in_burst and not inputs_not_all_raw_backed
 
             if args.debug_stacks:
                 print(
@@ -1662,10 +1767,14 @@ def main():
                     print(
                         "    - Reason: Burst safety check failed (likely a focus bracket)."
                     )
+                if inputs_not_all_raw_backed:
+                    print("    - Reason: Inferred input frames are not all RAW-backed.")
                 print("--- End Debugging Stack ---")
 
             if not is_valid_stack:
-                if not (3 <= len(potential_inputs) <= 15):
+                if not inputs_not_all_raw_backed and not (
+                    3 <= len(potential_inputs) <= 15
+                ):
                     rejected_too_few_inputs += 1
                 if too_many_in_burst:
                     rejected_burst_safety += 1
@@ -1949,6 +2058,9 @@ def main():
         print(f"  Evaluated as potential stacks:  {stack_outputs_seen}")
         print(f"  Accepted stacks:               {accepted_stacks}")
         print(f"  Rejected stack candidates:     {total_rejected}")
+        print(
+            f"  Input sequences not all RAW-backed skipped: {inputs_not_all_raw_backed_skipped}"
+        )
 
         if args.debug_stacks and total_rejected > 0:
             print("    Rejection breakdown:")
@@ -1964,6 +2076,10 @@ def main():
                 print(f"      Too few inputs:            {rejected_too_few_inputs}")
             if rejected_burst_safety:
                 print(f"      Burst safety:              {rejected_burst_safety}")
+            if inputs_not_all_raw_backed_skipped:
+                print(
+                    f"      Inputs not all RAW-backed: {inputs_not_all_raw_backed_skipped}"
+                )
 
         print(f"  {verb} {planned_output_count} stacked output files")
         print(f"  {verb} {planned_input_count} stack input files")
@@ -2194,10 +2310,6 @@ def main():
         claimed_input_stems = set()
         processed_stems_for_remaining = set()
 
-        MAX_OUTPUT_LAG_SECONDS = 120
-        MAX_INPUT_GAP_SECONDS = 6
-        MAX_BURST_GAP_SECONDS = 2.0
-        BURST_EXTRA_FRAMES_REQUIRED = 3
         move_operations = []
         expected_moves_per_stem = defaultdict(int)
         successful_moves_per_stem = defaultdict(int)
@@ -2250,141 +2362,25 @@ def main():
                     print("  - Stack REJECTED: Output is the first in its sequence.")
                 continue
 
-            potential_inputs = []
-            expected_num = output_num - 1
-            current_index = idx - 1
-            hit_input_cap = False
-            stop_reason = "None"
-
-            if args.debug_stacks:
-                print("  - Scanning for Input frames (backward from output number):")
-
-            prev_mtime = output_mtime
             if output_mtime is None:
                 if args.debug_stacks:
                     print("  - Stack REJECTED: Output mtime is missing.")
                 continue
 
-            allowed_gap = MAX_OUTPUT_LAG_SECONDS
-            gap_type = "output_lag"
-
-            while current_index >= 0 and len(potential_inputs) < 15:
-                candidate_num, candidate_stem = sequence[current_index]
-                candidate_record = file_db[candidate_stem]
-
-                if candidate_num != expected_num:
-                    stop_reason = f"Number mismatch (expected {expected_num}, found {candidate_num})"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                if candidate_stem in claimed_input_stems:
-                    stop_reason = "Already claimed by another stack"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                if not (
-                    candidate_record.get("has_raw") or candidate_record.get("has_jpg")
-                ):
-                    stop_reason = "No corresponding RAW or JPG file found"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                input_mtime = get_stem_mtime(candidate_record, args.verbose)
-
-                has_valid_raw_mtime = False
-                if candidate_record.get("has_raw"):
-                    raw_mtime_val = get_file_mtime(
-                        candidate_record["files"]["raw"], False
-                    )
-                    if raw_mtime_val:
-                        has_valid_raw_mtime = True
-
-                mtime_source = "RAW" if has_valid_raw_mtime else "JPG"
-
-                if not input_mtime or not prev_mtime:
-                    time_gap = float("inf")
-                else:
-                    time_gap = abs((prev_mtime - input_mtime).total_seconds())
-
-                if time_gap > allowed_gap:
-                    stop_reason = f"Time gap too large ({time_gap:.2f}s > {allowed_gap}s, type: {gap_type})"
-                    if args.debug_stacks:
-                        print(
-                            f"    - Input '{candidate_stem}': REJECTED ({stop_reason})"
-                        )
-                    break
-
-                if args.debug_stacks:
-                    print(
-                        f"    - Input '{candidate_stem}': ACCEPTED (mtime source: {mtime_source}, {gap_type} gap={time_gap:.2f}s <= {allowed_gap}s)"
-                    )
-
-                prev_mtime = input_mtime
-                allowed_gap = MAX_INPUT_GAP_SECONDS
-                gap_type = "input_gap"
-
-                potential_inputs.append(candidate_stem)
-                expected_num -= 1
-                current_index -= 1
-
-            if len(potential_inputs) == 15:
-                hit_input_cap = True
-                if args.debug_stacks:
-                    print("  - Note: Reached 15-frame input cap.")
-
-            too_many_in_burst = False
-            if potential_inputs and hit_input_cap:
-                burst_probe_stems = []
-                probe_index = current_index
-                probe_expected_num = expected_num
-
-                while (
-                    probe_index >= 0
-                    and len(burst_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED
-                ):
-                    probe_num, probe_stem = sequence[probe_index]
-                    if probe_num != probe_expected_num:
-                        break
-                    burst_probe_stems.append(probe_stem)
-                    probe_expected_num -= 1
-                    probe_index -= 1
-
-                if len(burst_probe_stems) >= BURST_EXTRA_FRAMES_REQUIRED:
-                    first_input_stem = potential_inputs[-1]
-                    first_input_mtime = get_stem_mtime(
-                        file_db[first_input_stem], args.verbose
-                    )
-
-                    all_in_burst_gap = True
-                    for probe_stem in burst_probe_stems:
-                        probe_mtime = get_stem_mtime(file_db[probe_stem], args.verbose)
-                        if not first_input_mtime or not probe_mtime:
-                            all_in_burst_gap = False
-                            break
-                        gap = abs((first_input_mtime - probe_mtime).total_seconds())
-                        if gap > MAX_BURST_GAP_SECONDS:
-                            all_in_burst_gap = False
-                            break
-
-                    if all_in_burst_gap:
-                        too_many_in_burst = True
-                        if args.debug_stacks:
-                            print(
-                                f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start."
-                            )
+            potential_inputs, too_many_in_burst, inputs_not_all_raw_backed = (
+                scan_stack_inputs(
+                    sequence,
+                    idx,
+                    output_num,
+                    output_mtime,
+                    output_data,
+                    claimed_input_stems,
+                )
+            )
 
             is_valid_stack = (
                 3 <= len(potential_inputs) <= 15
-            ) and not too_many_in_burst
+            ) and not too_many_in_burst and not inputs_not_all_raw_backed
 
             if args.debug_stacks:
                 print(
@@ -2398,6 +2394,8 @@ def main():
                     print(
                         "    - Reason: Burst safety check failed (likely a focus bracket)."
                     )
+                if inputs_not_all_raw_backed:
+                    print("    - Reason: Inferred input frames are not all RAW-backed.")
                 print("--- End Debugging Stack ---")
 
             if is_valid_stack:
@@ -2886,6 +2884,9 @@ def main():
                 f"{prefix_info} in '{src_dir}' (renaming {processed_count} of them)."
             )
             print(
+                f"Input sequences not all RAW-backed skipped: {inputs_not_all_raw_backed_skipped}"
+            )
+            print(
                 f"DRY RUN: Would move {moved_input_count} input files (JPG and ORF) to:"
             )
             for d in sorted(input_dest_dirs):
@@ -2909,6 +2910,9 @@ def main():
             print(
                 f"\nDone. Processed {stack_outputs_seen} stacked JPG files"
                 f"{prefix_info} in '{src_dir}' (renamed {processed_count})."
+            )
+            print(
+                f"Input sequences not all RAW-backed skipped: {inputs_not_all_raw_backed_skipped}"
             )
             print(f"Moved {moved_input_count} input files (JPG and ORF) to:")
             for d in sorted(input_dest_dirs):
