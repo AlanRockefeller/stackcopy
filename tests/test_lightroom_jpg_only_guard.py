@@ -162,6 +162,71 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             )
             self.assertEqual(files_under(src), [])
 
+    def test_lightroomimport_quick_consecutive_stacks_stop_at_prior_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "card"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+            base_time = datetime(2026, 6, 17, 12, 0, 0)
+
+            media_times = {
+                1: base_time,
+                2: base_time + timedelta(seconds=2),
+                3: base_time + timedelta(seconds=4),
+                4: base_time + timedelta(seconds=8),
+                5: base_time + timedelta(seconds=12),
+                6: base_time + timedelta(seconds=14),
+                7: base_time + timedelta(seconds=16),
+                8: base_time + timedelta(seconds=20),
+            }
+            for i in (1, 2, 3, 5, 6, 7):
+                write_media_file(src / f"_617{i:04d}.JPG", media_times[i])
+                write_media_file(src / f"_617{i:04d}.ORF", media_times[i])
+            write_media_file(src / "_6170004.JPG", media_times[4])
+            write_media_file(src / "_6170008.JPG", media_times[8])
+
+            result = self.run_stackcopy(
+                ["--lightroomimport", str(src), "--debug-stacks"],
+                lightroom,
+                stack_input,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("inferred input frames are not all RAW-backed", result.stdout)
+            self.assertIn("Non-RAW-backed boundary after sufficient inputs", result.stdout)
+            self.assertIn("Stacked JPG candidates found:  2", result.stdout)
+            self.assertIn("Accepted stacks:               2", result.stdout)
+            self.assertIn(
+                "Breakdown: 2 stacked outputs, 12 stack inputs, 0 remaining",
+                result.stdout,
+            )
+
+            lightroom_files = {p.name for p in files_under(lightroom)}
+            stack_files = {p.name for p in files_under(stack_input)}
+            self.assertEqual(
+                {"_6170004 stacked.JPG", "_6170008 stacked.JPG"},
+                lightroom_files,
+            )
+            self.assertEqual(
+                {
+                    "_6170001.JPG",
+                    "_6170001.ORF",
+                    "_6170002.JPG",
+                    "_6170002.ORF",
+                    "_6170003.JPG",
+                    "_6170003.ORF",
+                    "_6170005.JPG",
+                    "_6170005.ORF",
+                    "_6170006.JPG",
+                    "_6170006.ORF",
+                    "_6170007.JPG",
+                    "_6170007.ORF",
+                },
+                stack_files,
+            )
+            self.assertEqual(files_under(src), [])
+
     def test_lightroomimport_no_stack_detection_imports_all_as_remaining(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
