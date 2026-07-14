@@ -49,7 +49,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.strip(), "Stackcopy 1.5.7")
+        self.assertEqual(result.stdout.strip(), "Stackcopy 1.5.8")
 
     def test_lightroomimport_jpg_only_repro_imports_all_as_remaining(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,6 +224,122 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
                     "_6170007.ORF",
                 },
                 stack_files,
+            )
+            self.assertEqual(files_under(src), [])
+
+    def test_lightroomimport_rejects_stack_candidate_inside_continuing_bracket(self):
+        """A missing RAW in a long bracket must not look like a stack output.
+
+        This mirrors the P6292502-P6292522 portion of the June 29, 2026
+        regression.  The candidate at P6292519 has 15 valid-looking inputs
+        behind it, while P6292501 is an earlier, genuine stack output separated
+        by five minutes.  A backward-only burst probe is fooled by that older
+        output; the frames after P6292519 prove that the bracket is continuing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "card"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+            stack_time = datetime(2026, 6, 29, 11, 35, 28)
+            bracket_time = stack_time + timedelta(minutes=5)
+
+            # A real six-input in-camera stack immediately before the bracket.
+            for number in range(2495, 2501):
+                mtime = stack_time + timedelta(
+                    milliseconds=(number - 2495) * 100
+                )
+                write_media_file(src / f"P629{number}.JPG", mtime)
+                write_media_file(src / f"P629{number}.ORF", mtime)
+            write_media_file(
+                src / "P6292501.JPG", stack_time + timedelta(seconds=1)
+            )
+
+            # A long focus bracket.  P6292519 deliberately lacks its RAW to
+            # exercise burst safety independently of the all-RAW-backed guard.
+            for number in range(2502, 2523):
+                mtime = bracket_time + timedelta(
+                    milliseconds=(number - 2502) * 100
+                )
+                write_media_file(src / f"P629{number}.JPG", mtime)
+                if number != 2519:
+                    write_media_file(src / f"P629{number}.ORF", mtime)
+
+            result = self.run_stackcopy(
+                ["--lightroomimport", str(src), "--debug-stacks"],
+                lightroom,
+                stack_input,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(
+                "Burst Safety Check: TRIGGERED. Burst continues after output "
+                "candidate with 3 frames within 2.0s.",
+                result.stdout,
+            )
+            self.assertIn("Stacked JPG candidates found:  2", result.stdout)
+            self.assertIn("Accepted stacks:               1", result.stdout)
+            self.assertIn(
+                "Breakdown: 1 stacked outputs, 12 stack inputs, 41 remaining",
+                result.stdout,
+            )
+
+            lightroom_files = {p.name for p in files_under(lightroom)}
+            stack_files = {p.name for p in files_under(stack_input)}
+            self.assertIn("P6292501 stacked.JPG", lightroom_files)
+            self.assertIn("P6292519.JPG", lightroom_files)
+            self.assertNotIn("P6292519 stacked.JPG", lightroom_files)
+            self.assertEqual(
+                {
+                    name
+                    for number in range(2495, 2501)
+                    for name in (f"P629{number}.JPG", f"P629{number}.ORF")
+                },
+                stack_files,
+            )
+            self.assertEqual(files_under(src), [])
+
+    def test_lightroomimport_immediate_consecutive_stacks_are_not_one_burst(self):
+        """Already-claimed frames after an output start the next real stack."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "card"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+            base_time = datetime(2026, 6, 29, 12, 0, 0)
+
+            # Both complete stacks fit inside the forward guard's two-second
+            # window.  Reverse processing accepts the second stack first and
+            # its claimed inputs must act as a boundary for the first one.
+            for number in (1, 2, 3, 5, 6, 7):
+                mtime = base_time + timedelta(milliseconds=number * 100)
+                write_media_file(src / f"_629{number:04d}.JPG", mtime)
+                write_media_file(src / f"_629{number:04d}.ORF", mtime)
+            write_media_file(
+                src / "_6290004.JPG",
+                base_time + timedelta(milliseconds=400),
+            )
+            write_media_file(
+                src / "_6290008.JPG",
+                base_time + timedelta(milliseconds=800),
+            )
+
+            result = self.run_stackcopy(
+                ["--lightroomimport", str(src), "--debug-stacks"],
+                lightroom,
+                stack_input,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("Burst Safety Check: TRIGGERED", result.stdout)
+            self.assertIn("Accepted stacks:               2", result.stdout)
+            self.assertIn(
+                "Breakdown: 2 stacked outputs, 12 stack inputs, 0 remaining",
+                result.stdout,
+            )
+            self.assertEqual(
+                {"_6290004 stacked.JPG", "_6290008 stacked.JPG"},
+                {p.name for p in files_under(lightroom)},
             )
             self.assertEqual(files_under(src), [])
 

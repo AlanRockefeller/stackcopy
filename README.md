@@ -278,7 +278,8 @@ For `--lightroom` and `--lightroomimport`, the script does more work to identify
 - Groups files by numeric sequence (e.g., IMG_0100 through IMG_0108)
 - Confirms frames were taken within a short time window of each other (6 seconds between inputs, up to 120 seconds lag for the output)
 - Accepts stacks with 3–15 input frames
-- Rejects sequences with more than 15 consecutive frames within a tight burst window, to avoid moving focus bracketing sets
+- Rejects candidates when a tight burst continues before or after them, to avoid moving focus-bracketing frames even when an older photo breaks the backward scan
+- Treats inputs already claimed by a later valid stack as a stack boundary, preserving rapid consecutive in-camera stacks
 
 Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or rejected.
 
@@ -309,8 +310,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.5.7
-- **Date**: June 19, 2026
+- **Version**: 1.5.8
+- **Date**: July 13, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

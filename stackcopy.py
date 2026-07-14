@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.7 by Alan Rockefeller
-# 6/19/26
+# Stackcopy version 1.5.8 by Alan Rockefeller
+# 7/13/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any
 
-STACKCOPY_VERSION = "1.5.7"
+STACKCOPY_VERSION = "1.5.8"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -1626,6 +1626,57 @@ def main():
                     if args.debug_stacks:
                         print(
                             f"  - Burst Safety Check: TRIGGERED. Found {len(burst_probe_stems)} extra frames within {MAX_BURST_GAP_SECONDS}s of start."
+                        )
+
+        # A backward-only probe misses an output candidate near the beginning
+        # of a long focus bracket.  In that layout the scan can collect a
+        # valid-looking input window, then run into an older unrelated photo
+        # before finding three extra frames.  Look immediately after every
+        # otherwise viable candidate as well: an in-camera stack output ends
+        # its burst, while a focus bracket continues through the candidate.
+        if len(potential_inputs) >= 3 and not too_many_in_burst:
+            forward_probe_stems = []
+            probe_index = idx + 1
+            probe_expected_num = output_num + 1
+
+            while (
+                probe_index < len(sequence)
+                and len(forward_probe_stems) < BURST_EXTRA_FRAMES_REQUIRED
+            ):
+                probe_num, probe_stem = sequence[probe_index]
+                if probe_num != probe_expected_num:
+                    break
+                # Output candidates are processed newest-first.  Claimed
+                # frames here belong to a later stack that was already
+                # accepted, so they are a real stack boundary rather than
+                # evidence that this candidate sits inside one long bracket.
+                if probe_stem in claimed_input_stems:
+                    forward_probe_stems.clear()
+                    break
+                forward_probe_stems.append(probe_stem)
+                probe_expected_num += 1
+                probe_index += 1
+
+            if len(forward_probe_stems) >= BURST_EXTRA_FRAMES_REQUIRED:
+                all_in_burst_gap = True
+                for probe_stem in forward_probe_stems:
+                    probe_mtime = get_stem_mtime(file_db[probe_stem], args.verbose)
+                    if not output_mtime or not probe_mtime:
+                        all_in_burst_gap = False
+                        break
+                    gap = abs((probe_mtime - output_mtime).total_seconds())
+                    if gap > MAX_BURST_GAP_SECONDS:
+                        all_in_burst_gap = False
+                        break
+
+                if all_in_burst_gap:
+                    too_many_in_burst = True
+                    if args.debug_stacks:
+                        print(
+                            "  - Burst Safety Check: TRIGGERED. Burst continues "
+                            "after output candidate with "
+                            f"{len(forward_probe_stems)} frames within "
+                            f"{MAX_BURST_GAP_SECONDS}s."
                         )
 
         input_frames_are_raw_backed = inferred_inputs_are_raw_backed(potential_inputs)
