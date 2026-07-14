@@ -6,6 +6,5 @@ from __future__ import annotations
 
 import stackcopy
 
-
 if __name__ == "__main__":
     stackcopy.main()
