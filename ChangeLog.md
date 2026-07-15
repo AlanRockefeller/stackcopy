@@ -1,5 +1,11 @@
 # Change Log
 
+## **1.5.8 - 2026-07-13**
+
+- Fixed a false-positive stack detection when a JPG-without-RAW candidate appears near the beginning of a long focus bracket and an older photo breaks the backward burst probe.
+- Stack detection now checks for a tight burst continuing immediately after an otherwise valid output candidate.
+- Inputs already claimed by a later valid stack remain a boundary, so rapid consecutive in-camera stacks are not mistaken for one long focus bracket.
+
 ## **1.5.7 - 2026-06-19**
 
 - Added `--version` so installed copies can report their exact Stackcopy version.
