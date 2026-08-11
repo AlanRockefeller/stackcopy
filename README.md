@@ -154,7 +154,7 @@ Moves the input files of a stack to a dated folder structure and renames the out
 
 ### `--lightroomimport [DIR]`
 
-The full workflow. Scans the source directory recursively, plans all moves first, shows a summary, then moves files oldest-first by photo time. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library. Videos are treated like single-shot photos and moved to the same dated Lightroom destination. It doesn't actually import to Lightroom - it just puts the photos and videos where Lightroom would have put them - except for the stack input files, which go to a different directory. You'll want them if you don't like how the in-camera stacking worked, or want to stack the raw files.
+The full workflow. Scans the source directory recursively, plans all moves first, shows a summary, then moves files oldest-first by file modification time, which normally corresponds to capture time on a camera card. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library. Videos are treated like single-shot photos and moved to the same dated Lightroom destination. It doesn't actually import to Lightroom - it just puts the photos and videos where Lightroom would have put them - except for the stack input files, which go to a different directory. You'll want them if you don't like how the in-camera stacking worked, or want to stack the raw files.
 
 ```bash
 ./stackcopy.py --lightroomimport /photos/camera-import/
@@ -187,6 +187,8 @@ When using `--lightroomimport`, stacked outputs, single-shot/focus-bracket photo
 ```
 
 Override with the `STACKCOPY_LIGHTROOM_IMPORT_DIR` environment variable.
+
+The `YYYY/YYYY-MM-DD` directories are based on each file's filesystem modification time, not EXIF `DateTimeOriginal`. On a camera card, this modification time normally corresponds to when the photograph or video was captured.
 
 On Linux/WSL, `<Pictures>` is `~/pictures` if that directory exists, otherwise `~/Pictures`. On Windows, it's your system Pictures folder.
 
@@ -254,7 +256,7 @@ This shows which files are being considered, timestamp gaps between frames, why 
 - `--yesterday` — Only process files from yesterday
 - `--date YYYY-MM-DD` — Only process files from a specific date
 
-Date filters work with all modes.
+Date filters work with all modes and use filesystem modification dates. In `--lightroomimport`, a valid stack is selected by its stacked output's date; all of that stack's input frames stay with it even if an individual frame's modification time falls just across a date boundary.
 
 ### Other options
 
@@ -264,7 +266,7 @@ Date filters work with all modes.
 - `-i` / `--interactive` — Ask for confirmation before moving (`--lightroomimport` only)
 - `--leave-on-card` — Copy during `--lightroomimport` instead of moving, leaving source files in place
 - `--force` — Overwrite existing files without asking
-- `-j N` / `--jobs N` — Use N parallel workers for `--copy`, `--stackcopy`, and `--lightroom`. `--lightroomimport` always runs sequentially to preserve oldest-first order.
+- `-j N` / `--jobs N` — Set the parallel worker count. `--copy` and `--stackcopy` default to one worker unless this option is supplied. During a normal run, `--lightroom` automatically chooses up to 4 workers when its effective worker count is still 1. `--lightroomimport` always forces sequential execution to preserve oldest-first order. Values above 2× the CPU count are capped.
 - `--debug-stacks` / `--debugstacks` — Show detailed diagnostics for stack detection
 - `--no-stack-detection` — Import Lightroom-mode files without automatic stack sorting
 - `--version` — Show the installed Stackcopy version
@@ -275,11 +277,13 @@ For `--copy`, `--rename`, and `--stackcopy`, the rule is simple: if a JPG has no
 
 For `--lightroom` and `--lightroomimport`, the script does more work to identify which input frames belong to each stacked output:
 
-- Groups files by numeric sequence (e.g., IMG_0100 through IMG_0108)
+- Groups files by numeric sequence (e.g., `P8081885` through `P8081891`). Numeric stack detection requires at least six digits in the numeric portion of the filename.
 - Confirms frames were taken within a short time window of each other (6 seconds between inputs, up to 120 seconds lag for the output)
 - Accepts stacks with 3–15 input frames
 - Rejects candidates when a tight burst continues before or after them, to avoid moving focus-bracketing frames even when an older photo breaks the backward scan
 - Treats inputs already claimed by a later valid stack as a stack boundary, preserving rapid consecutive in-camera stacks
+
+Automatic stack sorting in `--lightroom` and `--lightroomimport` requires RAW-backed input frames. If a camera folder and filename-prefix group contains JPGs but no RAW files, Stackcopy does not guess: it disables automatic stack detection for that group and imports the JPGs normally. Shoot RAW+JPG if you want automatic stack sorting.
 
 Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or rejected.
 
@@ -287,13 +291,12 @@ Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or r
 
 stackcopy is designed to be cautious:
 
-- **Atomic operations**: Files are written to a temporary location first, then atomically moved to their final path. You'll never end up with a partial or corrupted file.
-- **Cross-device safe moves**: When source and destination are on different filesystems, stackcopy uses copy-then-delete with an atomic copy step.
+- **Atomic file handling**: Same-filesystem moves use an atomic rename. Copies and cross-filesystem moves are written to a temporary file in the destination directory and atomically replaced, avoiding partially written destination files. After a successful cross-filesystem copy, the source is deleted.
 - **Self-healing**: Automatically detects and replaces 0-byte placeholder files left behind by interrupted previous runs.
 - **Identical-file detection**: If the destination already has the same content, the operation proceeds safely (deleting the source for moves, skipping for copies).
 - **Collision-safe renaming**: When a destination file already exists with different content, stackcopy adds a suffix (e.g., `IMG_1234__2.JPG`) to avoid overwriting. This keeps paired files (JPG + RAW) together under the same suffix.
 - **Disk space preflight**: Before large operations, checks available disk space and prompts for confirmation if it looks tight.
-- **Idempotent**: Files already containing "stacked" in the name are skipped, so you can run the script multiple times safely.
+- **Safe to re-run**: Stackcopy avoids adding "stacked" a second time, detects identical destination files, and is designed so interrupted imports can be run again safely.
 
 ### Olympus / OM System file numbering
 
@@ -332,7 +335,7 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 - Always run with `--dry` first to see what will happen
 - Use `--verbose` when you want to understand exactly what happened
 - Use `--debug-stacks` only when Lightroom-mode detection needs troubleshooting
-- Use `--jobs 4` or higher for faster processing in `--copy`, `--stackcopy`, and `--lightroom` modes
+- `--copy` and `--stackcopy` use one worker by default; use `--jobs N` when parallel copies help. `--lightroom` chooses up to 4 workers automatically, while `--lightroomimport` stays sequential to preserve file order.
 - If operations are interrupted, just re-run — self-healing will fix any incomplete files
 - Quote paths with spaces, especially on Windows
 

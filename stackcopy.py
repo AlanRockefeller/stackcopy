@@ -979,23 +979,21 @@ def main():
     )
 
     # Add date filtering options
-    date_group = parser.add_argument_group(
-        "Date Filtering (optional, for copy operations)"
-    )
+    date_group = parser.add_argument_group("Date Filtering (optional)")
     date_group.add_argument(
         "--today",
         action="store_true",
-        help="Process JPGs created today that don't have a corresponding raw file.",
+        help="Only process media whose file modification date is today.",
     )
     date_group.add_argument(
         "--yesterday",
         action="store_true",
-        help="Process JPGs created yesterday that don't have a corresponding raw file.",
+        help="Only process media whose file modification date is yesterday.",
     )
     date_group.add_argument(
         "--date",
         metavar="YYYY-MM-DD",
-        help="Process JPGs from a specific date that don't have a corresponding raw file.",
+        help="Only process media with the specified file modification date.",
     )
 
     # Add prefix option
@@ -1063,7 +1061,11 @@ def main():
         type=int,
         default=1,
         metavar="N",
-        help="Number of parallel copy workers to use for --copy/--stackcopy (default: 1)",
+        help=(
+            "Parallel workers for --copy/--stackcopy (default: 1). "
+            "--lightroom auto-selects up to 4; --lightroomimport is sequential. "
+            "Values are capped at 2x CPU count."
+        ),
     )
 
     # Parse arguments
@@ -1100,7 +1102,7 @@ def main():
         args.jobs = cpu_count * 2
 
     if args.lightroom and not args.dry_run and args.jobs == 1:
-        # If user didn't explicitly request more jobs, pick something sensible
+        # When the effective count is still one, pick something sensible.
         # 4 workers max, but don't exceed 2x CPU cores
         auto_jobs = min(4, cpu_count * 2)
         if args.verbose:
@@ -2003,6 +2005,8 @@ def main():
                             f"Warning: Could not determine date for '{src_path}', skipping import move."
                         )
                     continue
+                if target_date and file_date != target_date:
+                    continue
 
                 dest_dir_import = os.path.join(
                     lightroom_import_base_dir,
@@ -2618,7 +2622,9 @@ def main():
                     for future in as_completed(future_to_op):
                         orig_name, ldest, inp_stem = future_to_op[future]
                         try:
-                            if future.result():
+                            success, bytes_moved = future.result()
+                            if success:
+                                total_bytes_moved += bytes_moved
                                 moved_input_count += 1
                                 input_dest_dirs.add(ldest)
                                 successful_moves_per_stem[inp_stem] += 1
@@ -2787,8 +2793,9 @@ def main():
                 for job in pending_copy_jobs:
                     success = False
                     try:
-                        success = job["future"].result()
+                        success, bytes_copied = job["future"].result()
                         if success:
+                            total_bytes_moved += bytes_copied
                             processed_count += 1
                         else:
                             failed_count += 1
