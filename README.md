@@ -295,6 +295,34 @@ stackcopy is designed to be cautious:
 - **Disk space preflight**: Before large operations, checks available disk space and prompts for confirmation if it looks tight.
 - **Idempotent**: Files already containing "stacked" in the name are skipped, so you can run the script multiple times safely.
 
+### Olympus / OM System file numbering
+
+Olympus / OM System cameras may use filenames with a date-derived prefix followed by a four-digit sequence number. For example, in `P8081868.ORF`, `P808` represents the date portion and `1868` is the sequence number.
+
+On the OM-1, **Menu → Card/Folder/File → File Name** can be set to **Reset** or **Auto**. With **Reset**, swapping or removing cards can cause the camera to reuse sequence numbers based on the numbering on the currently inserted card. A common multiple-card scenario is:
+
+- Cards A and B have both been used, and card B contains the later sequence numbers.
+- Card B is removed or loaned to someone.
+- Shooting continues on card A while **File Name = Reset**.
+- The camera can reuse numbers that were already used on card B.
+- If the photos were taken on the same date, their complete filenames can be identical even though they are different photographs.
+
+For OM-1 users running Stackcopy, **File Name = Auto** is preferable, especially when rotating multiple SD cards, because it is designed to continue file numbering across card changes.
+
+Stackcopy's collision-safe renaming makes camera-side filename reuse safe. If the destination copy is byte-for-byte identical, Stackcopy treats it as the same file and does not needlessly add `__2`. If the content differs, Stackcopy preserves both photographs and applies the same suffix to the new JPG/RAW pair:
+
+```text
+Existing:
+P8081868.JPG
+P8081868.ORF
+
+Different photos arrive from the card with those same names:
+P8081868__2.JPG
+P8081868__2.ORF
+```
+
+The `__2` suffix is intentional data-loss protection. It does not mean Stackcopy misidentified or duplicated the photograph; the camera reused the filename, and Stackcopy kept the existing photo instead of overwriting it.
+
 ## WSL note
 
 If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., it will be significantly slower than native Linux paths due to the 9P filesystem bridge. The script will warn you about this. To get better performance, either copy files to a native Linux path first, or run stackcopy directly on Windows. On my system, running the same command in Windows vs. WSL is 5 times faster.
