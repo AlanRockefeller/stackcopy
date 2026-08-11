@@ -465,12 +465,16 @@ def dest_conflicts(src_path: str, dest_path: str, force: bool) -> bool:
     Return True if dest_path exists and we should NOT overwrite it.
     If contents are identical, it's not a conflict (we treat it as safe).
     If --force is set, we consider it not a conflict (user explicitly wants overwrite).
+
+    A matching camera basename does not prove that two files are the same photo.
+    For example, an OM-1 using File Name = Reset can reuse a sequence number after
+    cards are swapped or removed, producing two different P8081868.ORF files.
     """
     if not os.path.exists(dest_path):
         return False
     if force:
         return False
-    # If source exists and is identical to destination, it's safe to treat as non-conflict.
+    # Content distinguishes a harmless re-import from a reused name for a different photo.
     return not (os.path.exists(src_path) and files_identical(src_path, dest_path))
 
 
@@ -497,6 +501,9 @@ def pick_unique_basenames_for_stem(
     if force:
         return 1, orig
 
+    # Suffixes protect against genuine camera filename reuse, not just importing an
+    # unrelated directory twice. In particular, OM-1 File Name = Reset can reuse
+    # sequence numbers after card swaps/removals. Keep one suffix for the JPG+RAW pair.
     # Try counters starting at 1 until all destinations are non-conflicting.
     # (Hard cap avoids infinite loops in weird cases.)
     for counter in range(1, 1000):
@@ -528,12 +535,10 @@ def print_collision_rename_notice(
     if not changes:
         return
     verb = "Would rename" if dry_run else "Renaming"
-    why = (
-        "a file with the same name already exists in the destination "
-        "(usually from an earlier import after the camera card counter reset)"
-    )
     print(
-        f"Note: {verb} files for '{stem_label}' in '{dest_dir}' to avoid overwriting earlier photos ({why})"
+        f"Note: {verb} files for '{stem_label}' in '{dest_dir}' due to a filename "
+        "collision. Cameras can reuse numbers after card swaps or numbering resets; "
+        "Stackcopy preserves the existing photo."
     )
     for old, new in changes:
         print(f"  - {old} -> {new}")
