@@ -208,7 +208,7 @@ class LightroomImportDateFilterTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Will move 3 remaining files", result.stdout)
             self.assertIn(
-                "Breakdown: 0 stacked outputs, 0 stack inputs, 3 remaining",
+                "Breakdown: 0 stacks (0 stacked outputs, 0 input files), 3 remaining",
                 result.stdout,
             )
             self.assert_relative_date_directory(
@@ -307,7 +307,7 @@ class LightroomImportDateFilterTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Accepted stacks:               1", result.stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 6 stack inputs, 3 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 6 input files), 3 remaining",
                 result.stdout,
             )
             self.assertEqual(

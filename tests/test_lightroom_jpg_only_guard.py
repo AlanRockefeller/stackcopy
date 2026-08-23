@@ -168,7 +168,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Will move 0 stack input files", result.stdout)
             self.assertIn("Will move 26 remaining files", result.stdout)
             self.assertIn(
-                "Breakdown: 0 stacked outputs, 0 stack inputs, 26 remaining",
+                "Breakdown: 0 stacks (0 stacked outputs, 0 input files), 26 remaining",
                 result.stdout,
             )
 
@@ -230,7 +230,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Stacked JPG candidates found:  1", result.stdout)
             self.assertIn("Accepted stacks:               1", result.stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 6 stack inputs, 4 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 6 input files), 4 remaining",
                 result.stdout,
             )
 
@@ -302,7 +302,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
                 if mode == "--lightroomimport":
                     self.assertIn("Accepted stacks:               1", result.stdout)
                     self.assertIn(
-                        "Breakdown: 1 stacked outputs, 12 stack inputs, 8 remaining",
+                        "Breakdown: 1 stack (1 stacked outputs, 12 input files), 8 remaining",
                         result.stdout,
                     )
                     self.assertEqual(
@@ -352,7 +352,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertNotIn("Burst Safety Check: TRIGGERED", result.stdout)
             self.assertIn("Accepted stacks:               1", result.stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 30 stack inputs, 8 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 30 input files), 8 remaining",
                 result.stdout,
             )
             self.assertEqual(
@@ -395,7 +395,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Accepted stacks:               1", result.stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 10 stack inputs, 0 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 10 input files), 0 remaining",
                 result.stdout,
             )
             self.assertEqual(
@@ -445,7 +445,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Stacked JPG candidates found:  2", result.stdout)
             self.assertIn("Accepted stacks:               2", result.stdout)
             self.assertIn(
-                "Breakdown: 2 stacked outputs, 12 stack inputs, 0 remaining",
+                "Breakdown: 2 stacks (2 stacked outputs, 12 input files), 0 remaining",
                 result.stdout,
             )
 
@@ -508,7 +508,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Accepted stacks:               0", result.stdout)
             self.assertIn("Burst safety:              1", result.stdout)
             self.assertIn(
-                "Breakdown: 0 stacked outputs, 0 stack inputs, 37 remaining",
+                "Breakdown: 0 stacks (0 stacked outputs, 0 input files), 37 remaining",
                 result.stdout,
             )
             imported_names = {path.name for path in files_under(lightroom)}
@@ -546,7 +546,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertNotIn("Burst Safety Check: TRIGGERED", result.stdout)
             self.assertIn("Accepted stacks:               1", result.stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 30 stack inputs, 6 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 30 input files), 6 remaining",
                 result.stdout,
             )
             self.assertIn(
@@ -610,7 +610,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertNotIn("Burst Safety Check: TRIGGERED", stdout)
             self.assertIn("Accepted stacks:               1", stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 30 stack inputs, 6 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 30 input files), 6 remaining",
                 stdout,
             )
             self.assertIn(
@@ -662,7 +662,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Will move 0 stack input files", result.stdout)
             self.assertIn("Will move 9 remaining files", result.stdout)
             self.assertIn(
-                "Breakdown: 0 stacked outputs, 0 stack inputs, 9 remaining",
+                "Breakdown: 0 stacks (0 stacked outputs, 0 input files), 9 remaining",
                 result.stdout,
             )
 
@@ -718,7 +718,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Will move 0 stack input files", result.stdout)
             self.assertIn("Will move 46 remaining files", result.stdout)
             self.assertIn(
-                "Breakdown: 0 stacked outputs, 0 stack inputs, 46 remaining",
+                "Breakdown: 0 stacks (0 stacked outputs, 0 input files), 46 remaining",
                 result.stdout,
             )
 
@@ -763,7 +763,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertIn("Stacked JPG candidates found:  1", result.stdout)
             self.assertIn("Accepted stacks:               1", result.stdout)
             self.assertIn(
-                "Breakdown: 1 stacked outputs, 6 stack inputs, 0 remaining",
+                "Breakdown: 1 stack (1 stacked outputs, 6 input files), 0 remaining",
                 result.stdout,
             )
 

@@ -220,7 +220,7 @@ This will scan all files, including files in camera subfolders such as `DCIM/100
 A successful run ends with a summary like:
 
 ```
-Done. Imported 342 files in 18.4s. Breakdown: 12 stacked outputs, 96 stack inputs, 234 remaining. Data: 8.6 GB at 479.3 MB/s average. Failures: 0.
+Done. Imported 342 files in 18.4s. Breakdown: 12 stacks (12 stacked outputs, 96 input files), 234 remaining. Data: 8.6 GB at 479.3 MB/s average. Failures: 0.
 ```
 
 ### Add a custom prefix

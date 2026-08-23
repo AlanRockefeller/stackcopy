@@ -1075,6 +1075,8 @@ def main():
     failed_count = 0
     moved_input_count = 0
     moved_output_count = 0
+    moved_stack_groups: set[str] = set()
+    stack_group_of_stem: dict[str, str] = {}
     stack_outputs_seen = 0
     remaining_moved_count = 0
     inputs_not_all_raw_backed_skipped = 0
@@ -1824,8 +1826,10 @@ def main():
 
             # --- Stack accepted: plan moves ---
             accepted_stacks += 1
+            stack_group_of_stem[output_stem] = output_stem
             for input_stem in potential_inputs:
                 claimed_input_stems.add(input_stem)
+                stack_group_of_stem[input_stem] = output_stem
 
             # Plan the stacked output move: source -> ~/Pictures/Lightroom/YEAR/DATE/
             # with "stacked" suffix applied to the destination filename
@@ -2222,8 +2226,10 @@ def main():
                 if move.category == "stack_output":
                     moved_output_count += 1
                     processed_count += 1
+                    moved_stack_groups.add(stack_group_of_stem.get(move.stem, move.stem))
                 elif move.category == "stack_input":
                     moved_input_count += 1
+                    moved_stack_groups.add(stack_group_of_stem.get(move.stem, move.stem))
                 elif move.category == "remaining":
                     remaining_moved_count += 1
 
@@ -2931,7 +2937,9 @@ def main():
             print(
                 f"Done. {import_action} {total_moved} files in {exec_elapsed_time:.1f}s. "
                 f"{source_note}"
-                f"Breakdown: {moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining. "
+                f"Breakdown: {len(moved_stack_groups)} {'stack' if len(moved_stack_groups) == 1 else 'stacks'} "
+                f"({moved_output_count} stacked outputs, {moved_input_count} input files), "
+                f"{remaining_moved_count} remaining. "
                 f"{throughput_info}Failures: {failed_count}."
             )
     elif args.dry_run:
