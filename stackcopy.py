@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.8 by Alan Rockefeller
-# 7/14/26
+# Stackcopy version 1.5.9 by Alan Rockefeller
+# 08/24/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any
 
-STACKCOPY_VERSION = "1.5.8"
+STACKCOPY_VERSION = "1.5.9"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -979,23 +979,21 @@ def main():
     )
 
     # Add date filtering options
-    date_group = parser.add_argument_group(
-        "Date Filtering (optional, for copy operations)"
-    )
+    date_group = parser.add_argument_group("Date Filtering (optional)")
     date_group.add_argument(
         "--today",
         action="store_true",
-        help="Process JPGs created today that don't have a corresponding raw file.",
+        help="Only process media whose file modification date is today.",
     )
     date_group.add_argument(
         "--yesterday",
         action="store_true",
-        help="Process JPGs created yesterday that don't have a corresponding raw file.",
+        help="Only process media whose file modification date is yesterday.",
     )
     date_group.add_argument(
         "--date",
         metavar="YYYY-MM-DD",
-        help="Process JPGs from a specific date that don't have a corresponding raw file.",
+        help="Only process media with the specified file modification date.",
     )
 
     # Add prefix option
@@ -1063,7 +1061,11 @@ def main():
         type=int,
         default=1,
         metavar="N",
-        help="Number of parallel copy workers to use for --copy/--stackcopy (default: 1)",
+        help=(
+            "Parallel workers for --copy/--stackcopy (default: 1). "
+            "--lightroom auto-selects up to 4; --lightroomimport is sequential. "
+            "Values are capped at 2x CPU count."
+        ),
     )
 
     # Parse arguments
@@ -1073,6 +1075,8 @@ def main():
     failed_count = 0
     moved_input_count = 0
     moved_output_count = 0
+    moved_stack_groups: set[str] = set()
+    stack_group_of_stem: dict[str, str] = {}
     stack_outputs_seen = 0
     remaining_moved_count = 0
     inputs_not_all_raw_backed_skipped = 0
@@ -1100,7 +1104,7 @@ def main():
         args.jobs = cpu_count * 2
 
     if args.lightroom and not args.dry_run and args.jobs == 1:
-        # If user didn't explicitly request more jobs, pick something sensible
+        # When the effective count is still one, pick something sensible.
         # 4 workers max, but don't exceed 2x CPU cores
         auto_jobs = min(4, cpu_count * 2)
         if args.verbose:
@@ -1822,8 +1826,10 @@ def main():
 
             # --- Stack accepted: plan moves ---
             accepted_stacks += 1
+            stack_group_of_stem[output_stem] = output_stem
             for input_stem in potential_inputs:
                 claimed_input_stems.add(input_stem)
+                stack_group_of_stem[input_stem] = output_stem
 
             # Plan the stacked output move: source -> ~/Pictures/Lightroom/YEAR/DATE/
             # with "stacked" suffix applied to the destination filename
@@ -2002,6 +2008,8 @@ def main():
                         print(
                             f"Warning: Could not determine date for '{src_path}', skipping import move."
                         )
+                    continue
+                if target_date and file_date != target_date:
                     continue
 
                 dest_dir_import = os.path.join(
@@ -2218,8 +2226,10 @@ def main():
                 if move.category == "stack_output":
                     moved_output_count += 1
                     processed_count += 1
+                    moved_stack_groups.add(stack_group_of_stem.get(move.stem, move.stem))
                 elif move.category == "stack_input":
                     moved_input_count += 1
+                    moved_stack_groups.add(stack_group_of_stem.get(move.stem, move.stem))
                 elif move.category == "remaining":
                     remaining_moved_count += 1
 
@@ -2272,6 +2282,14 @@ def main():
                 )
             for stem in recovery_stems:
                 record = file_db[stem]
+                # File types that were planned as part of the selected stack
+                # (its JPG/RAW inputs and outputs) bypass the --date filter,
+                # exactly as they did at plan time.
+                stack_file_types = {
+                    m_res["move"].file_type
+                    for m_res in execution_results[stem]["moves"]
+                    if m_res["move"].category != "remaining"
+                }
                 files_by_dest: dict[str, list[tuple[str, dict]]] = defaultdict(list)
                 for file_type in REMAINING_FILE_TYPES:
                     file_info = record["files"].get(file_type)
@@ -2282,6 +2300,12 @@ def main():
                         continue
                     file_date = get_file_date(file_info, args.verbose)
                     if file_date is None:
+                        continue
+                    if (
+                        target_date
+                        and file_date != target_date
+                        and file_type not in stack_file_types
+                    ):
                         continue
                     dest_dir_import = os.path.join(
                         lightroom_import_base_dir,
@@ -2618,7 +2642,9 @@ def main():
                     for future in as_completed(future_to_op):
                         orig_name, ldest, inp_stem = future_to_op[future]
                         try:
-                            if future.result():
+                            success, bytes_moved = future.result()
+                            if success:
+                                total_bytes_moved += bytes_moved
                                 moved_input_count += 1
                                 input_dest_dirs.add(ldest)
                                 successful_moves_per_stem[inp_stem] += 1
@@ -2787,8 +2813,9 @@ def main():
                 for job in pending_copy_jobs:
                     success = False
                     try:
-                        success = job["future"].result()
+                        success, bytes_copied = job["future"].result()
                         if success:
+                            total_bytes_moved += bytes_copied
                             processed_count += 1
                         else:
                             failed_count += 1
@@ -2924,7 +2951,9 @@ def main():
             print(
                 f"Done. {import_action} {total_moved} files in {exec_elapsed_time:.1f}s. "
                 f"{source_note}"
-                f"Breakdown: {moved_output_count} stacked outputs, {moved_input_count} stack inputs, {remaining_moved_count} remaining. "
+                f"Breakdown: {len(moved_stack_groups)} {'stack' if len(moved_stack_groups) == 1 else 'stacks'} "
+                f"({moved_output_count} stacked outputs, {moved_input_count} input files), "
+                f"{remaining_moved_count} remaining. "
                 f"{throughput_info}Failures: {failed_count}."
             )
     elif args.dry_run:

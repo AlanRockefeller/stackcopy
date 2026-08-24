@@ -1,5 +1,20 @@
 # Change Log
 
+## **1.5.9 - 2026-08-24**
+
+### Fixed
+
+- Fixed `--today`, `--yesterday`, and `--date` filtering in `--lightroomimport` so it applies consistently to photos, RAW+JPG pairs, and videos using filesystem modification dates.
+- Keep detected stacks together when date filtering, even when individual stack input frames cross a midnight/date boundary.
+- Fixed parallel copy result handling so failed operations are no longer incorrectly counted as successful.
+- Fixed transferred-byte and throughput accounting for parallel Lightroom and copy operations.
+- Improved Lightroom import summaries to report the number of actual stacks along with stacked outputs, input files, and remaining files.
+- Added regression tests for date-filtered imports, stack boundary handling, collisions, repeat imports, `--leave-on-card`, sequential Lightroom imports, and parallel worker results.
+
+### Documentation
+
+- Clarified Lightroom import ordering, date handling, worker defaults, RAW-backed stack detection, re-run behavior, and atomic/cross-filesystem file handling.
+
 ## **1.5.8 - 2026-07-13**
 
 - Fixed a false-positive stack detection when a JPG-without-RAW candidate appears near the beginning of a long focus bracket and an older photo breaks the backward burst probe.
