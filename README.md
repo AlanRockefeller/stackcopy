@@ -283,7 +283,7 @@ For `--lightroom` and `--lightroomimport`, the script does more work to identify
 - Rejects candidates when a tight burst continues before or after them, to avoid moving focus-bracketing frames even when an older photo breaks the backward scan
 - Treats inputs already claimed by a later valid stack as a stack boundary, preserving rapid consecutive in-camera stacks
 
-Automatic stack sorting in `--lightroom` and `--lightroomimport` requires RAW-backed input frames. If a camera folder and filename-prefix group contains JPGs but no RAW files, Stackcopy does not guess: it disables automatic stack detection for that group and imports the JPGs normally. Shoot RAW+JPG if you want automatic stack sorting.
+Automatic stack sorting in `--lightroom` and `--lightroomimport` requires RAW-backed input frames. If a camera folder and filename-prefix group contains JPGs but no RAW files, Stackcopy does not guess: it disables automatic stack detection for that group and imports the JPGs normally. The one exception is a stack that spans a camera roll boundary: during a recursive scan, if the previous adjacent camera-roll directory has RAW files under the same filename prefix, stack detection stays enabled for the JPG-only group so its input frames can be found in that earlier folder. Shoot RAW+JPG if you want automatic stack sorting.
 
 Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or rejected.
 
@@ -291,7 +291,7 @@ Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or r
 
 stackcopy is designed to be cautious:
 
-- **Atomic file handling**: Same-filesystem moves use an atomic rename. Copies and cross-filesystem moves are written to a temporary file in the destination directory and atomically replaced, avoiding partially written destination files. After a successful cross-filesystem copy, the source is deleted.
+- **Atomic file handling**: Same-filesystem moves use an atomic rename. Copies and cross-filesystem moves are written to a temporary file in the destination directory and atomically replaced, avoiding partially written destination files. After a successful cross-filesystem copy, stackcopy attempts to delete the source; if that deletion fails, the move is still reported as complete and the failure is printed so the leftover source file can be handled manually.
 - **Self-healing**: Automatically detects and replaces 0-byte placeholder files left behind by interrupted previous runs.
 - **Identical-file detection**: If the destination already has the same content, the operation proceeds safely (deleting the source for moves, skipping for copies).
 - **Collision-safe renaming**: When a destination file already exists with different content, stackcopy adds a suffix (e.g., `IMG_1234__2.JPG`) to avoid overwriting. This keeps paired files (JPG + RAW) together under the same suffix.
