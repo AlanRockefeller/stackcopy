@@ -2282,6 +2282,14 @@ def main():
                 )
             for stem in recovery_stems:
                 record = file_db[stem]
+                # File types that were planned as part of the selected stack
+                # (its JPG/RAW inputs and outputs) bypass the --date filter,
+                # exactly as they did at plan time.
+                stack_file_types = {
+                    m_res["move"].file_type
+                    for m_res in execution_results[stem]["moves"]
+                    if m_res["move"].category != "remaining"
+                }
                 files_by_dest: dict[str, list[tuple[str, dict]]] = defaultdict(list)
                 for file_type in REMAINING_FILE_TYPES:
                     file_info = record["files"].get(file_type)
@@ -2292,6 +2300,12 @@ def main():
                         continue
                     file_date = get_file_date(file_info, args.verbose)
                     if file_date is None:
+                        continue
+                    if (
+                        target_date
+                        and file_date != target_date
+                        and file_type not in stack_file_types
+                    ):
                         continue
                     dest_dir_import = os.path.join(
                         lightroom_import_base_dir,
