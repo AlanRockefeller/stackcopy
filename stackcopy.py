@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
-# Stackcopy version 1.5.8 by Alan Rockefeller
-# 7/14/26
+# Stackcopy version 1.5.9 by Alan Rockefeller
+# 08/24/26
 
 # Copies / renames only the photos that have been stacked in-camera - designed for Olympus / OM System, though it might work for other cameras too.
 # Works on Linux, WSL, and Windows.
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any
 
-STACKCOPY_VERSION = "1.5.8"
+STACKCOPY_VERSION = "1.5.9"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
