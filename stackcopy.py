@@ -20,6 +20,7 @@ import re
 import errno
 import json
 import subprocess
+from urllib.parse import quote
 from bisect import bisect_left
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -320,6 +321,7 @@ class PlannedMove:
         str  # destination filename (may include "stacked" rename + collision suffix)
     )
     dest_dir: str
+    stack_output_name: str | None = None
     destination_check: DestinationCheck | None = None
 
 
@@ -471,6 +473,88 @@ def path_is_within(path: str, root: str) -> bool:
     except ValueError:
         # Different drives (Windows) or an abs/relative mismatch -> not within.
         return False
+
+
+_CARD_HOUSEKEEPING_DIRS = {
+    ".spotlight-v100",
+    ".trashes",
+    "lost.dir",
+    "misc",
+    "private",
+    "system volume information",
+}
+_CARD_HOUSEKEEPING_FILES = {
+    ".ds_store",
+    "desktop.ini",
+    "thumbs.db",
+}
+
+
+def card_would_be_empty_after(source_dir: str, removed_paths=()) -> bool:
+    """Return whether only ignorable camera/card housekeeping would remain.
+
+    Directory shells such as ``DCIM`` do not make a card non-empty. Files in
+    the common camera/card housekeeping directories above are ignored, as are
+    a few operating-system metadata files. Every other file must be in
+    ``removed_paths`` for this to return true.
+    """
+    removed = {
+        os.path.normcase(os.path.realpath(os.fspath(path))).casefold()
+        for path in removed_paths
+    }
+    try:
+        for root, dirs, files in os.walk(source_dir):
+            relative_root = os.path.relpath(root, source_dir)
+            parts = () if relative_root == "." else _path_parts(relative_root)
+            if any(part.casefold() in _CARD_HOUSEKEEPING_DIRS for part in parts):
+                dirs[:] = []
+                continue
+            dirs[:] = [
+                name
+                for name in dirs
+                if name.casefold() not in _CARD_HOUSEKEEPING_DIRS
+            ]
+            for filename in files:
+                if filename.casefold() in _CARD_HOUSEKEEPING_FILES:
+                    continue
+                path_key = os.path.normcase(
+                    os.path.realpath(os.path.join(root, filename))
+                ).casefold()
+                if path_key not in removed:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def _path_parts(path: str) -> tuple[str, ...]:
+    """Split a relative path using the current platform's path rules."""
+    normalized = os.path.normpath(path)
+    parts: list[str] = []
+    while normalized not in ("", "."):
+        normalized, tail = os.path.split(normalized)
+        if not tail:
+            break
+        parts.append(tail)
+    return tuple(reversed(parts))
+
+
+def source_is_removable(source_dir: str) -> bool:
+    """Best-effort removable-media detection for the plan payload."""
+    absolute = os.path.abspath(source_dir)
+    if IS_WINDOWS:
+        try:
+            import ctypes
+
+            drive, _ = os.path.splitdrive(absolute)
+            root = drive + "\\" if drive else absolute
+            return ctypes.windll.kernel32.GetDriveTypeW(root) == 2
+        except (AttributeError, OSError):
+            return False
+    if IS_MACOS:
+        return path_is_within(absolute, "/Volumes")
+    normalized = absolute.replace(os.sep, "/")
+    return normalized.startswith(("/media/", "/run/media/", "/mnt/"))
 
 
 def lightroom_import_source_conflict(
@@ -1891,6 +1975,15 @@ def main():
     )
 
     parser.add_argument(
+        "--plan-json",
+        action="store_true",
+        help=(
+            "Scan and plan --lightroomimport without changing files, then emit "
+            "one machine-readable JSON object."
+        ),
+    )
+
+    parser.add_argument(
         "-j",
         "--jobs",
         type=int,
@@ -1942,6 +2035,18 @@ def main():
     lightroom_source_remains_count = 0
 
     args = parser.parse_args()
+
+    # A plan request reuses the real planner with dry-run filesystem semantics.
+    # Route incidental diagnostics to stderr so stdout remains exactly one JSON
+    # object for callers. The original stream is restored when the payload is
+    # emitted below.
+    plan_json_stdout = None
+    if args.plan_json:
+        if args.lightroomimport is None:
+            parser.error("--plan-json can only be used with --lightroomimport.")
+        args.dry_run = True
+        plan_json_stdout = sys.stdout
+        sys.stdout = sys.stderr
 
     if args.debug_stacks:
         print(f"Running Stackcopy from: {os.path.abspath(__file__)}")
@@ -2195,6 +2300,7 @@ def main():
         )
     file_db = {}
     unrecognized_extensions: dict[str, int] = defaultdict(int)
+    scanned_source_subdirs: set[str] = set()
     try:
         for entry in iter_source_file_entries(
             src_dir, recursive=scan_recursively, exclude_dirs=scan_exclude_dirs
@@ -2215,6 +2321,8 @@ def main():
                 continue
 
             relative_dir = os.path.relpath(os.path.dirname(entry.path), src_dir)
+            if relative_dir != ".":
+                scanned_source_subdirs.add(relative_dir)
             record_key = (
                 stem
                 if not scan_recursively or relative_dir == "."
@@ -2843,6 +2951,7 @@ def main():
         # A2. Stack detection (same reverse-sorted walk as before)
         claimed_input_stems = set()
         processed_files_for_remaining: set[tuple[str, str]] = set()
+        stack_output_names: dict[str, str] = {}
 
         planned_moves: list[PlannedMove] = []
         destination_checks: dict[tuple[str, str], DestinationCheck] = {}
@@ -3083,11 +3192,13 @@ def main():
                         basename_orig=output_filename,
                         basename_dest=chosen_name,
                         dest_dir=dest_dir_import,
+                        stack_output_name=chosen_name,
                         destination_check=destination_checks.get(
                             (orig_jpg_path, dest_path)
                         ),
                     )
                 )
+                stack_output_names[output_stem] = chosen_name
                 processed_files_for_remaining.add((output_stem, "jpg"))
             else:
                 skipped_missing_date += 1
@@ -3194,6 +3305,7 @@ def main():
                             basename_orig=file_info["basename"],
                             basename_dest=chosen_basename,
                             dest_dir=lightroom_dest_dir,
+                            stack_output_name=stack_output_names.get(output_stem),
                             destination_check=destination_checks.get(
                                 (src_path, dest_path)
                             ),
@@ -3343,6 +3455,62 @@ def main():
         total_rejected = stack_outputs_seen - accepted_stacks
         all_dest_dirs = sorted(set(display_path(m.dest_dir) for m in planned_moves))
 
+        if args.plan_json:
+            planned_bytes = 0
+            for move in planned_moves:
+                try:
+                    planned_bytes += os.path.getsize(move.src_path)
+                except OSError:
+                    pass
+            mtimes = [move.mtime for move in planned_moves if move.mtime is not None]
+            newest = max(mtimes).date() if mtimes else None
+            if newest is not None:
+                newest_text = newest.isoformat()
+                dated_lightroom = os.path.join(
+                    lightroom_import_base_dir,
+                    str(newest.year),
+                    newest_text,
+                )
+                dated_stack_input = os.path.join(
+                    STACK_INPUT_DIR,
+                    str(newest.year),
+                    newest_text,
+                )
+            else:
+                newest_text = None
+                dated_lightroom = lightroom_import_base_dir
+                dated_stack_input = STACK_INPUT_DIR
+
+            other_videos = sum(
+                1
+                for move in planned_moves
+                if move.category == "remaining" and move.file_type == "video"
+            )
+            planned_sources = [move.src_path for move in planned_moves]
+            would_be_empty = card_would_be_empty_after(src_dir, planned_sources)
+            if args.leave_on_card and planned_sources:
+                would_be_empty = False
+            payload = {
+                "total": len(planned_moves),
+                "bytes": planned_bytes,
+                "stacks": accepted_stacks,
+                "stacked_outputs": planned_output_count,
+                "stack_inputs": planned_input_count,
+                "others": planned_remaining_count,
+                "other_photos": planned_remaining_count - other_videos,
+                "other_videos": other_videos,
+                "newest_date": newest_text,
+                "dest_lightroom": dated_lightroom,
+                "dest_stack_input": dated_stack_input,
+                "source_subdirs_scanned": sorted(scanned_source_subdirs),
+                "source_is_removable": source_is_removable(src_dir),
+                "source_would_be_empty_after": would_be_empty,
+            }
+            assert plan_json_stdout is not None
+            sys.stdout = plan_json_stdout
+            print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+            return
+
         verb = planned_verb
         dry_prefix = "DRY RUN: " if args.dry_run else ""
 
@@ -3453,11 +3621,22 @@ def main():
         attempted_count = 0
         try:
             for _move_index, move in enumerate(planned_moves):
+                progress_role = (
+                    "other" if move.category == "remaining" else move.category
+                )
+                progress_fields: dict[str, Any] = {
+                    "phase": file_operation,
+                    "done": _move_index,
+                    "total": _total_planned,
+                    "role": progress_role,
+                }
+                if move.stack_output_name:
+                    progress_fields["stack_output_name"] = quote(
+                        move.stack_output_name, safe=""
+                    )
                 _emit_progress(
                     file=os.path.basename(move.src_path),
-                    phase=file_operation,
-                    done=_move_index,
-                    total=_total_planned,
+                    **progress_fields,
                 )
                 try:
                     ensure_directory_once(move.dest_dir, created_dirs, args.dry_run)
