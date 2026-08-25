@@ -1,5 +1,19 @@
 # Change Log
 
+## **Unreleased**
+
+### Added
+
+- Added `--plan-json` for `--lightroomimport`: it runs the real scanner and planner without changing files, then emits one JSON object containing counts, bytes, dated destinations, scanned source subfolders, and best-effort removable/empty-card information.
+- Progress sentinels now identify `stack_output`, `stack_input`, and `other` roles and carry the associated finished stack name, allowing front-ends to explain the current file and maintain separate counters.
+
+### Changed
+
+- Rebuilt the customtkinter GUI around a pre-run import plan. The idle window now explains in-camera stacking, presents the source as a scanned card, makes move-versus-copy an explicit mode, and shows where finished stacks, source frames, and ordinary media will land.
+- Replaced the dry-run and leave-on-card checkboxes with a dedicated non-destructive preview button and a segmented move/copy control. Verbose and stack-detection options now live under a persisted Advanced disclosure.
+- Replaced the always-visible empty log with role-aware running progress, ETA/throughput metadata, four counter cards, safe-stop guidance, and a collapsed copyable detailed log. Success, nothing-found, degraded, cancelled, low-space, and launch-failure outcomes now share one result area.
+- Updated the GUI documentation and screenshot to match the plan-first workflow.
+
 ## **1.6.0 - 2026-08-24**
 
 ### Added

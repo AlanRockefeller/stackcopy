@@ -50,32 +50,43 @@ Supported video extensions for `--lightroomimport`: `.mov`, `.mp4`, `.m4v`, `.av
 
 ## Graphical interface (GUI)
 
-There is a simple GUI for the `--lightroomimport` workflow. It asks for the source and the two destination folders, then shows a progress bar while it works. If you already have a Lightroom catalog, you probably want to set this to the directory you store your images - it imports your media into the same directory structure that Lightroom uses, creating a directory for each day. You can also choose any other folder and it'll start creating daily media directories there.
+The GUI explains the complete `--lightroomimport` workflow before anything is
+moved. Choose a card and it scans in the background, counts finished stack
+photos, their source frames, and ordinary photos/videos, then shows the dated
+folder where each group will land. If you already have a Lightroom catalog,
+set the Lightroom destination to the directory where you store its images;
+Stackcopy creates the same year/day hierarchy Lightroom would make. The raw
+frames that fed in-camera stacks stay in a separate archive so they do not
+clutter the library.
 
-![The Stackcopy GUI after a completed import, showing the source and destination folders, options, progress bar, and a live log](docs/gui.png)
+![The Stackcopy GUI showing a scanned card, move or copy mode, and the three planned destinations before import](docs/gui.png)
 
 ### Using it
 
-1. **Launch it** — open the downloaded app
-2. **Pick the source** — the folder to import from (your SD card, or its `DCIM`
-   folder). It's scanned recursively.
-3. **Check the destinations** — the **Lightroom destination** (where stacked
-   outputs, single shots, and videos go) and the **Stack input frames** folder
-   (where the raw frames that fed each stack go) come pre-filled with the same
-   defaults the command line uses. The GUI remembers the last values you used
-   and restores them the next time you open it. Click **Browse...** to change
-   either one.
-4. **Optionally check _Dry run_** to preview every move without doing anything —
-   the button changes to **Preview (dry run)**. Check **Verbose log** for
-   per-file detail, **Show stack debug output** for stack-detection diagnostics,
-   or **Leave files on card** to copy into the destination folders without
-   deleting the source files.
-5. **Click _Start import_.** A progress bar and live log show each file as it is
-   moved or copied, with a running `done / total` count. You can **Cancel** at
-   any time — files are processed one at a time and the import is re-runnable,
-   so stopping is safe. If the destination is low on space, it asks before
-   continuing.
-6. When it finishes, **Open destination** opens your Lightroom folder.
+1. **Launch it** — open the downloaded app.
+2. **Choose the source card** — select the card itself or its `DCIM` folder.
+   Stackcopy scans recursively and shows the media count, total size, and camera
+   subfolders it found.
+3. **Choose move or copy** — **Move off the card** is the default and removes
+   each source only after its destination is safely written. **Copy, leave card
+   untouched** maps to `--leave-on-card` and preserves everything on the card.
+4. **Review where the files will land** — the three rows separate finished
+   stacked photos, the frames that fed those stacks, and ordinary shots/videos.
+   Click **Change** on a row to choose a different base folder. These choices
+   are remembered in `gui-state.json` as before.
+5. **Import or preview** — the main button includes the planned file count.
+   **Preview without moving anything** runs the same plan as a dry run. The
+   collapsed **Advanced** section contains Verbose log, Detect stacks, and Show
+   stack debug output.
+6. **Follow the import** — the running view names the phase and current file's
+   role, estimates time remaining, and counts stacked photos, stack frames,
+   singles/video, and problems separately. **Stop after this file** is safe:
+   operations happen one file at a time and a later run picks up the rest.
+   Expand **Show detailed log** only when you need the raw CLI output or want to
+   copy it.
+7. When it finishes, use **Open Lightroom folder** or **Import another card**.
+   If a removable card is empty after a successful move, Stackcopy reminds you
+   to format it in the camera before the next shoot.
 
 Files land in exactly the same place as the `--lightroomimport` command — see
 [Where files go](#where-files-go).
@@ -300,6 +311,7 @@ Date filters work with all modes and use filesystem modification dates. In `--li
 - `-v` / `--verbose` — Show detailed info about each file processed
 - `-i` / `--interactive` — Ask for confirmation before moving (`--lightroomimport` only)
 - `--leave-on-card` — Copy during `--lightroomimport` instead of moving, leaving source files in place
+- `--plan-json` — With `--lightroomimport`, scan and emit one JSON import plan without moving or copying files
 - `--force` — Overwrite existing files without asking
 - `-j N` / `--jobs N` — Set the parallel worker count. `--copy` and `--stackcopy` default to one worker unless this option is supplied. During a normal run, `--lightroom` automatically chooses up to 4 workers when its effective worker count is still 1. `--lightroomimport` always forces sequential execution to preserve oldest-first order. Values above 2× the CPU count are capped.
 - `--debug-stacks` / `--debugstacks` — Show detailed diagnostics for stack detection
