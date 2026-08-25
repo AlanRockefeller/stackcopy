@@ -112,9 +112,7 @@ class ButtonLabelTests(unittest.TestCase):
 
     def test_preview_label_is_explicitly_non_destructive(self):
         self.assertEqual(
-            gui.import_button_label(
-                plan_payload(), leave_on_card=False, preview=True
-            ),
+            gui.import_button_label(plan_payload(), leave_on_card=False, preview=True),
             "Preview without moving anything",
         )
 
@@ -128,7 +126,8 @@ class TerminalSummaryTests(unittest.TestCase):
 
     def test_cli_summary_uses_final_failure_and_import_counts(self):
         parsed = gui.parse_cli_summary(
-            "Files safely placed: 348\n  Failures: 0\nDone. Imported 348 files in 18.4 seconds\n"
+            "Files safely placed: 348\n  Failures: 0\n"
+            "Done. Imported 348 files in 18.4 seconds\n"
         )
         self.assertEqual(parsed, {"problems": 0, "imported": 348})
 

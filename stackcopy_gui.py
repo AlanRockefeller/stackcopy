@@ -136,7 +136,9 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
     ):
         return None
     subdirs = normalized.get("source_subdirs_scanned", [])
-    if not isinstance(subdirs, list) or not all(isinstance(item, str) for item in subdirs):
+    if not isinstance(subdirs, list) or not all(
+        isinstance(item, str) for item in subdirs
+    ):
         return None
     normalized["source_subdirs_scanned"] = subdirs
     return normalized
@@ -199,7 +201,9 @@ def parse_low_space_report(line: str) -> dict[str, object] | None:
 
 def low_space_dialog_message(report: dict[str, object] | None) -> str:
     if not report:
-        return "Stackcopy reports the destination is low on free space.\n\nProceed anyway?"
+        return (
+            "Stackcopy reports the destination is low on free space.\n\nProceed anyway?"
+        )
     count = report.get("count")
     required_label = f"Required ({count} files)" if count is not None else "Required"
     estimated = str(report.get("estimated_free", "unknown"))
@@ -369,7 +373,9 @@ class StackcopyGUI(ctk.CTk):
         lightroom_default, stack_default = default_dirs()
         saved = load_gui_state()
         self.src_var = ctk.StringVar(value=saved.get("source_dir", ""))
-        self.dst_var = ctk.StringVar(value=saved.get("lightroom_dir", lightroom_default))
+        self.dst_var = ctk.StringVar(
+            value=saved.get("lightroom_dir", lightroom_default)
+        )
         self.stk_var = ctk.StringVar(value=saved.get("stack_input_dir", stack_default))
         self.mode_var = ctk.StringVar(
             value=COPY_MODE if saved.get("file_mode") == "copy" else MOVE_MODE
@@ -528,7 +534,9 @@ class StackcopyGUI(ctk.CTk):
             button = self._text_button(
                 self.plan_rows,
                 "Change",
-                lambda variable=path_var: self._browse(variable, "Choose a destination"),
+                lambda variable=path_var: self._browse(
+                    variable, "Choose a destination"
+                ),
             )
             button.grid(row=row * 2, column=2, rowspan=2, padx=(10, 14))
             self.destination_buttons.append(button)
@@ -556,7 +564,9 @@ class StackcopyGUI(ctk.CTk):
         )
         self.advanced_btn.grid(row=0, column=3, sticky="e")
         self.advanced_frame = ctk.CTkFrame(self.actions, fg_color="transparent")
-        self.advanced_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        self.advanced_frame.grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0)
+        )
         self.verbose_check = ctk.CTkCheckBox(
             self.advanced_frame,
             text="Verbose log",
@@ -656,7 +666,8 @@ class StackcopyGUI(ctk.CTk):
         ctk.CTkLabel(
             self.running_controls,
             text=(
-                "Stopping is safe — files move one at a time and re-running picks up the rest."
+                "Stopping is safe — files move one at a time and re-running "
+                "picks up the rest."
             ),
             anchor="w",
             text_color=("gray40", "gray66"),
@@ -854,7 +865,9 @@ class StackcopyGUI(ctk.CTk):
             daemon=True,
         ).start()
 
-    def _plan_worker(self, generation: int, command: list[str], env: dict[str, str]) -> None:
+    def _plan_worker(
+        self, generation: int, command: list[str], env: dict[str, str]
+    ) -> None:
         creationflags = (
             getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         )
@@ -904,11 +917,13 @@ class StackcopyGUI(ctk.CTk):
             if plan
             else ""
         )
+        generic_output = "Finished stacked photos — renamed with ‘stacked’ added"
+        generic_output += " to the name"
         self.plan_headline_vars["stack_output"].set(
             (
                 f"{output_count} finished stacked photos — renamed {example}"
                 if output_count is not None
-                else "Finished stacked photos — renamed with ‘stacked’ added to the name"
+                else generic_output
             )
         )
         self.plan_headline_vars["stack_input"].set(
@@ -916,15 +931,22 @@ class StackcopyGUI(ctk.CTk):
                 f"{input_count} frames that fed those stacks — kept in case you want "
                 "to stack the RAWs yourself"
                 if input_count is not None
-                else "Frames that fed those stacks — kept in case you want to stack the RAWs yourself"
+                else (
+                    "Frames that fed those stacks — kept in case you want to "
+                    "stack the RAWs yourself"
+                )
             )
         )
         self.plan_headline_vars["other"].set(
             (
-                f"{other_count} single shots and videos — names untouched, dated folders "
+                f"{other_count} single shots and videos — names untouched, dated "
+                "folders "
                 "as Lightroom would make them"
                 if other_count is not None
-                else "Single shots and videos — names untouched, dated folders as Lightroom would make them"
+                else (
+                    "Single shots and videos — names untouched, dated folders as "
+                    "Lightroom would make them"
+                )
             )
         )
         if plan:
@@ -946,7 +968,8 @@ class StackcopyGUI(ctk.CTk):
         self._plan = payload
         if payload is None:
             self.source_scan_var.set(
-                "A pre-run plan is unavailable; Stackcopy will scan when the import starts."
+                "A pre-run plan is unavailable; Stackcopy will scan when the "
+                "import starts."
             )
         else:
             total = int(payload["total"])
@@ -1068,9 +1091,7 @@ class StackcopyGUI(ctk.CTk):
         self.meta_var.set("")
         self.current_file_var.set("Waiting for Stackcopy to finish its safety checks…")
         self._update_counter_cards()
-        threading.Thread(
-            target=self._worker, args=(command, env), daemon=True
-        ).start()
+        threading.Thread(target=self._worker, args=(command, env), daemon=True).start()
 
     def _set_running(self, running: bool) -> None:
         self._running = running
@@ -1306,7 +1327,8 @@ class StackcopyGUI(ctk.CTk):
         if terminated:
             self._show_result(
                 "Cancelled",
-                "Completed files are safe. Re-run the import to pick up everything left on the card.",
+                "Completed files are safe. Re-run the import to pick up "
+                "everything left on the card.",
                 problems=0,
                 allow_open=False,
             )
@@ -1324,7 +1346,8 @@ class StackcopyGUI(ctk.CTk):
             else:
                 self._show_result(
                     "Import stopped — low disk space",
-                    "No new file was started after the space check. Free some space and try again.",
+                    "No new file was started after the space check. Free some "
+                    "space and try again.",
                     problems=0,
                     allow_open=False,
                 )
@@ -1339,7 +1362,8 @@ class StackcopyGUI(ctk.CTk):
             self._show_zero_plan_rows()
             self._show_result(
                 "Nothing found",
-                "No supported photos or videos matched this import. Check that you chose the card or its DCIM folder.",
+                "No supported photos or videos matched this import. Check that "
+                "you chose the card or its DCIM folder.",
                 problems=0,
                 allow_open=False,
             )
@@ -1363,14 +1387,16 @@ class StackcopyGUI(ctk.CTk):
         elif self._degraded:
             self._show_result(
                 "Import finished, but not as planned",
-                "The files are safe but were not all placed as planned; review the log before erasing the card.",
+                "The files are safe but were not all placed as planned; review "
+                "the log before erasing the card.",
                 problems=max(1, problems),
                 allow_open=True,
             )
         else:
             self._show_result(
                 "Import did not finish",
-                f"Stackcopy exited with code {returncode}. Review the detailed log; files already completed are safe.",
+                f"Stackcopy exited with code {returncode}. Review the detailed "
+                "log; files already completed are safe.",
                 problems=max(1, problems),
                 allow_open=False,
             )
@@ -1382,10 +1408,12 @@ class StackcopyGUI(ctk.CTk):
             "0 finished stacked photos — renamed with ‘stacked’ added to the name"
         )
         self.plan_headline_vars["stack_input"].set(
-            "0 frames that fed those stacks — kept in case you want to stack the RAWs yourself"
+            "0 frames that fed those stacks — kept in case you want to stack "
+            "the RAWs yourself"
         )
         self.plan_headline_vars["other"].set(
-            "0 single shots and videos — names untouched, dated folders as Lightroom would make them"
+            "0 single shots and videos — names untouched, dated folders as "
+            "Lightroom would make them"
         )
 
     def _show_result(

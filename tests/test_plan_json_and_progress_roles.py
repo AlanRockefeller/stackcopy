@@ -121,9 +121,7 @@ class ProgressRoleTests(unittest.TestCase):
             when = datetime(2026, 8, 25, 12)
             for number in (1, 2, 3):
                 for extension in ("JPG", "ORF"):
-                    write_file(
-                        source / f"P808000{number}.{extension}", b"frame", when
-                    )
+                    write_file(source / f"P808000{number}.{extension}", b"frame", when)
             write_file(source / "P8080004.JPG", b"finished", when)
             write_file(source / "P8080010.ORF", b"single", when)
             metadata = {
