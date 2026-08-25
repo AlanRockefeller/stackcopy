@@ -2289,6 +2289,8 @@ def main():
     #   },
     #   ...
     # }
+    if operation_mode == "lightroomimport":
+        _emit_progress(phase="scan", done=0, total=0)
     scan_recursively = operation_mode == "lightroomimport"
     scan_exclude_dirs = ()
     if scan_recursively:
@@ -3523,6 +3525,8 @@ def main():
 
         verb = planned_verb
         dry_prefix = "DRY RUN: " if args.dry_run else ""
+
+        _emit_progress(phase="prepare", done=0, total=len(planned_moves))
 
         print(f"\n{dry_prefix}Planned Lightroom import for '{src_dir}':")
         print(f"  Stacked JPG candidates found:  {len(stacked_outputs)}")

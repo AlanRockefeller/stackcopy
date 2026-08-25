@@ -1038,6 +1038,9 @@ class StackcopyGUI(ctk.CTk):
         self._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
         self._stack_indexes = {}
         self._active_stack_name = None
+        self._log_open = False
+        self.log_frame.grid_remove()
+        self.log_toggle.configure(text="Show detailed log ▾")
         self._clear_log()
         self._set_running(True)
         self.actions.grid_remove()
@@ -1151,6 +1154,19 @@ class StackcopyGUI(ctk.CTk):
         phase = fields.get("phase")
         total = int(fields.get("total", "0") or 0)
         done = int(fields.get("done", "0") or 0)
+        if phase == "scan":
+            self.phase_var.set("Scanning card…")
+            self.current_file_var.set(
+                "Reading photo dates and looking for finished camera stacks…"
+            )
+            return
+        if phase == "prepare":
+            self._total = total
+            self.phase_var.set("Preparing…")
+            self.current_file_var.set(
+                "Checking destinations and available disk space before the first file."
+            )
+            return
         if phase == "start":
             self._total = total
             self.progress.stop()

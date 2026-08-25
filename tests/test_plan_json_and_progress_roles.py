@@ -150,6 +150,8 @@ class ProgressRoleTests(unittest.TestCase):
             self.assertTrue(any("role=stack_output" in line for line in progress))
             self.assertTrue(any("role=stack_input" in line for line in progress))
             self.assertTrue(any("role=other" in line for line in progress))
+            self.assertTrue(any("phase=scan" in line for line in progress))
+            self.assertTrue(any("phase=prepare" in line for line in progress))
             stack_lines = [line for line in progress if "role=stack_input" in line]
             self.assertTrue(
                 all(
