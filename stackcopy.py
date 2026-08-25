@@ -3506,6 +3506,16 @@ def main():
                 "source_is_removable": source_is_removable(src_dir),
                 "source_would_be_empty_after": would_be_empty,
             }
+            output_example = next(
+                (
+                    move.basename_dest
+                    for move in planned_moves
+                    if move.category == "stack_output"
+                ),
+                None,
+            )
+            if output_example is not None:
+                payload["stacked_output_example"] = output_example
             assert plan_json_stdout is not None
             sys.stdout = plan_json_stdout
             print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
