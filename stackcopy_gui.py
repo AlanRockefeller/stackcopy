@@ -1610,9 +1610,10 @@ class StackcopyGUI(ctk.CTk):
     def _import_another(self) -> None:
         self.activity.grid_remove()
         self.actions.grid()
-        self.src_var.set("")
         self._plan = None
+        self._plan_generation += 1
         self._refresh_idle_plan()
+        self._schedule_plan_scan()
 
     def _on_close(self) -> None:
         process = self._proc

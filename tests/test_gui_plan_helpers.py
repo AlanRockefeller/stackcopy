@@ -169,6 +169,24 @@ class ModeChangeTests(unittest.TestCase):
         self.assertFalse(gui.source_will_be_empty(plan, leave_on_card=True))
 
 
+class ImportAnotherTests(unittest.TestCase):
+    def test_keeps_remembered_source_and_rescans_it(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window.activity = mock.Mock()
+        window.actions = mock.Mock()
+        window.src_var = mock.Mock()
+        window._plan = plan_payload()
+        window._plan_generation = 4
+
+        gui.StackcopyGUI._import_another(window)
+
+        window.src_var.set.assert_not_called()
+        self.assertIsNone(window._plan)
+        self.assertEqual(window._plan_generation, 5)
+        window._refresh_idle_plan.assert_called_once_with()
+        window._schedule_plan_scan.assert_called_once_with()
+
+
 class TerminalSummaryTests(unittest.TestCase):
     def test_success_metrics_include_time_bytes_rate_and_failure_state(self):
         self.assertEqual(
