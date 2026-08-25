@@ -94,6 +94,37 @@ class ProgressParserTests(unittest.TestCase):
         self.assertEqual(fields["stack_output_name"], "P8081918 stacked.jpg")
         self.assertEqual(filename, "P8081912.ORF")
 
+    def test_recorded_progress_sequence_counts_each_lines_own_role(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._total = 0
+        window._done = 0
+        window._current_role = None
+        window._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
+        window._degraded = False
+        window._plan = plan_payload(total=5, stacked_outputs=1, stack_inputs=2, others=2)
+        window.progress = mock.Mock()
+        window.phase_var = mock.Mock()
+        window.current_file_var = mock.Mock()
+
+        lines = [
+            "@@SCPROGRESS phase=start done=0 total=5",
+            "@@SCPROGRESS phase=move done=0 total=5 role=stack_output file=A.JPG",
+            "@@SCPROGRESS phase=move done=1 total=5 role=stack_input file=A.ORF",
+            "@@SCPROGRESS phase=move done=2 total=5 role=stack_input file=B.ORF",
+            "@@SCPROGRESS phase=move done=3 total=5 role=other file=C.JPG",
+            "@@SCPROGRESS phase=move done=4 total=5 role=other file=D.MOV",
+            "@@SCPROGRESS phase=done done=5 total=5 degraded=0",
+        ]
+        for line in lines:
+            gui.StackcopyGUI._handle_progress(window, line)
+
+        self.assertEqual(
+            window._bucket_done,
+            {"stack_output": 1, "stack_input": 2, "other": 2},
+        )
+        self.assertEqual(window._done, 5)
+        window.progress.set.assert_called_with(1.0)
+
 
 class ButtonLabelTests(unittest.TestCase):
     def test_plan_count_and_mode_drive_primary_label(self):
@@ -143,6 +174,14 @@ class TerminalSummaryTests(unittest.TestCase):
         self.assertEqual(
             gui.success_metrics(20.0, 10 * 1024 * 1024),
             "20.0 seconds · 10.0 MB · 512.0 KB/s · nothing failed",
+        )
+
+    def test_success_metrics_pluralize_reported_problems(self):
+        self.assertEqual(
+            gui.success_metrics(1.0, 0, 1), "1.0 seconds · 1 problem"
+        )
+        self.assertEqual(
+            gui.success_metrics(1.0, 0, 3), "1.0 seconds · 3 problems"
         )
 
     def test_cli_summary_uses_final_failure_and_import_counts(self):

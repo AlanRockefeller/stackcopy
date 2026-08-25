@@ -270,7 +270,7 @@ def parse_cli_summary(text: str) -> dict[str, int]:
     return result
 
 
-def success_metrics(elapsed: float, byte_count: int) -> str:
+def success_metrics(elapsed: float, byte_count: int, problems: int = 0) -> str:
     """Build the compact success meta line used by the terminal result."""
     safe_elapsed = max(0.001, elapsed)
     details = [format_duration(safe_elapsed)]
@@ -278,7 +278,10 @@ def success_metrics(elapsed: float, byte_count: int) -> str:
         details.extend(
             (format_bytes(byte_count), f"{format_bytes(byte_count / safe_elapsed)}/s")
         )
-    details.append("nothing failed")
+    if problems:
+        details.append(f"{problems} {'problem' if problems == 1 else 'problems'}")
+    else:
+        details.append("nothing failed")
     return " · ".join(details)
 
 
@@ -1302,9 +1305,9 @@ class StackcopyGUI(ctk.CTk):
             self.phase_var.set("Preparing…" if total else "Nothing found")
             return
         if phase in {"move", "copy"}:
-            if self._current_role in self._bucket_done:
-                self._bucket_done[self._current_role] += 1
-            self._current_role = fields.get("role", "other")
+            role = fields.get("role", "other")
+            self._current_role = role if role in self._bucket_done else "other"
+            self._bucket_done[self._current_role] += 1
             self._done = done
             self._total = total or self._total
             output_name = fields.get("stack_output_name")
@@ -1323,8 +1326,6 @@ class StackcopyGUI(ctk.CTk):
             self._update_meta()
             self._update_counter_cards()
         elif phase in {"done", "interrupted"}:
-            if self._current_role in self._bucket_done and done > self._done:
-                self._bucket_done[self._current_role] += 1
             self._current_role = None
             self._done = done
             self._total = total or self._total
@@ -1403,10 +1404,10 @@ class StackcopyGUI(ctk.CTk):
         }[role]
         return int(self._plan[key])
 
-    def _update_counter_cards(self, problems: int = 0, terminal: bool = False) -> None:
+    def _update_counter_cards(self, problems: int = 0) -> None:
         for role in ("stack_output", "stack_input", "other"):
             total = self._bucket_total(role)
-            done = total if terminal and total is not None else self._bucket_done[role]
+            done = self._bucket_done[role]
             self.counter_vars[role].set(
                 f"{done} / {total}" if total is not None else str(done)
             )
@@ -1473,8 +1474,8 @@ class StackcopyGUI(ctk.CTk):
             byte_count = int(self._plan.get("bytes", 0)) if self._plan else 0
             self._show_result(
                 f"{summary.get('imported', self._total)} files imported",
-                success_metrics(elapsed, byte_count),
-                problems=0,
+                success_metrics(elapsed, byte_count, problems),
+                problems=problems,
                 allow_open=True,
                 success=True,
             )
@@ -1532,10 +1533,10 @@ class StackcopyGUI(ctk.CTk):
             self.result_body_label.grid()
         self.progress.grid_remove()
         self.current_file_label.grid_remove()
-        self._update_counter_cards(problems=problems, terminal=success)
+        self._update_counter_cards(problems=problems)
         show_empty = success and source_will_be_empty(
             self._plan, leave_on_card=self.mode_var.get() == COPY_MODE
-        )
+        ) and problems == 0
         if show_empty:
             self.card_empty_note.grid()
         else:
