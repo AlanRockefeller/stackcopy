@@ -361,11 +361,16 @@ class StackcopyGUI(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         self._proc: subprocess.Popen | None = None
+        self._plan_proc: subprocess.Popen | None = None
+        self._plan_proc_lock = threading.Lock()
         self._queue: queue.Queue = queue.Queue()
         self._running = False
+        self._closing = False
+        self._plan_scanning = False
         self._plan: dict[str, object] | None = None
         self._plan_generation = 0
         self._plan_after: str | None = None
+        self._plan_slow_after: str | None = None
         self._save_state_scheduled = False
         self._pending: tuple[list[str], str, str, bool] | None = None
         self._assume_yes = False
@@ -848,8 +853,11 @@ class StackcopyGUI(ctk.CTk):
     def _schedule_plan_scan(self) -> None:
         if self._running:
             return
+        self._cancel_plan_scan()
         if self._plan_after is not None:
             self.after_cancel(self._plan_after)
+        source = self.src_var.get().strip()
+        self._set_plan_scanning(bool(source and os.path.isdir(source)))
         self._plan_after = self.after(350, self._begin_plan_scan)
 
     def _begin_plan_scan(self) -> None:
@@ -857,10 +865,14 @@ class StackcopyGUI(ctk.CTk):
         source = self.src_var.get().strip()
         if not source or not os.path.isdir(source):
             self._plan = None
+            self._set_plan_scanning(False)
             self._refresh_idle_plan()
             return
         generation = self._plan_generation
-        self.source_scan_var.set("Scanning card…")
+        self._set_plan_scanning(True)
+        self._plan_slow_after = self.after(
+            2000, lambda: self._show_slow_plan_scan(generation)
+        )
         args = ["--lightroomimport", source, "--plan-json"]
         if not self.detect_stacks_var.get():
             args.append("--no-stack-detection")
@@ -879,23 +891,79 @@ class StackcopyGUI(ctk.CTk):
         creationflags = (
             getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         )
+        process: subprocess.Popen | None = None
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 env=env,
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creationflags,
             )
+            with self._plan_proc_lock:
+                superseded = generation != self._plan_generation or self._closing
+                if not superseded:
+                    self._plan_proc = process
+            if superseded:
+                self._stop_plan_process(process)
+            stdout, _stderr = process.communicate()
             payload = (
-                parse_plan_json(completed.stdout) if completed.returncode == 0 else None
+                parse_plan_json(stdout) if process.returncode == 0 else None
             )
             self._queue.put(("plan", (generation, payload)))
         except Exception:
             self._queue.put(("plan", (generation, None)))
+        finally:
+            with self._plan_proc_lock:
+                if self._plan_proc is process:
+                    self._plan_proc = None
+
+    @staticmethod
+    def _stop_plan_process(process: subprocess.Popen) -> None:
+        """Terminate a superseded scan without blocking the Tk event loop."""
+        if process.poll() is not None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _cancel_plan_scan(self) -> None:
+        with self._plan_proc_lock:
+            process = self._plan_proc
+            self._plan_proc = None
+        if process and process.poll() is None:
+            threading.Thread(
+                target=self._stop_plan_process, args=(process,), daemon=True
+            ).start()
+
+    def _set_plan_scanning(self, scanning: bool) -> None:
+        self._plan_scanning = scanning
+        if self._plan_slow_after is not None:
+            self.after_cancel(self._plan_slow_after)
+            self._plan_slow_after = None
+        if scanning:
+            self.source_scan_var.set("Scanning card…")
+        self.start_btn.configure(
+            state="disabled" if scanning or self._running else "normal"
+        )
+
+    def _show_slow_plan_scan(self, generation: int) -> None:
+        self._plan_slow_after = None
+        if self._plan_scanning and generation == self._plan_generation:
+            self.source_scan_var.set(
+                "Scanning card… this can take a moment on a large card."
+            )
 
     def _refresh_idle_plan(self) -> None:
         plan = self._plan
@@ -908,7 +976,7 @@ class StackcopyGUI(ctk.CTk):
         )
         if not source:
             self.source_scan_var.set("No source folder selected.")
-        elif plan is None and self.source_scan_var.get() != "Scanning card…":
+        elif plan is None and not self._plan_scanning:
             self.source_scan_var.set("Plan not available yet.")
 
         total = int(plan["total"]) if plan else None
@@ -974,6 +1042,7 @@ class StackcopyGUI(ctk.CTk):
 
     def _apply_plan(self, payload: dict[str, object] | None) -> None:
         self._plan = payload
+        self._set_plan_scanning(False)
         if payload is None:
             self.source_scan_var.set(
                 "A pre-run plan is unavailable; Stackcopy will scan when the "
@@ -1085,6 +1154,8 @@ class StackcopyGUI(ctk.CTk):
         self.log_frame.grid_remove()
         self.log_toggle.configure(text="Show detailed log ▾")
         self._clear_log()
+        self._cancel_plan_scan()
+        self._set_plan_scanning(False)
         self._set_running(True)
         self.actions.grid_remove()
         self.activity.grid()
@@ -1531,6 +1602,11 @@ class StackcopyGUI(ctk.CTk):
                 return
             if not self._terminate_process(process, "stop"):
                 return
+        self._closing = True
+        if self._plan_after is not None:
+            self.after_cancel(self._plan_after)
+            self._plan_after = None
+        self._cancel_plan_scan()
         self._save_current_defaults()
         self.destroy()
 
