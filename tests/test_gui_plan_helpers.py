@@ -119,5 +119,19 @@ class ButtonLabelTests(unittest.TestCase):
         )
 
 
+class TerminalSummaryTests(unittest.TestCase):
+    def test_success_metrics_include_time_bytes_rate_and_failure_state(self):
+        self.assertEqual(
+            gui.success_metrics(20.0, 10 * 1024 * 1024),
+            "20.0 seconds · 10.0 MB · 512.0 KB/s · nothing failed",
+        )
+
+    def test_cli_summary_uses_final_failure_and_import_counts(self):
+        parsed = gui.parse_cli_summary(
+            "Files safely placed: 348\n  Failures: 0\nDone. Imported 348 files in 18.4 seconds\n"
+        )
+        self.assertEqual(parsed, {"problems": 0, "imported": 348})
+
+
 if __name__ == "__main__":
     unittest.main()

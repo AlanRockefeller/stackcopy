@@ -254,6 +254,18 @@ def parse_cli_summary(text: str) -> dict[str, int]:
     return result
 
 
+def success_metrics(elapsed: float, byte_count: int) -> str:
+    """Build the compact success meta line used by the terminal result."""
+    safe_elapsed = max(0.001, elapsed)
+    details = [format_duration(safe_elapsed)]
+    if byte_count:
+        details.extend(
+            (format_bytes(byte_count), f"{format_bytes(byte_count / safe_elapsed)}/s")
+        )
+    details.append("nothing failed")
+    return " · ".join(details)
+
+
 def _mono_family() -> str:
     if os.name == "nt":
         return "Consolas"
@@ -1324,6 +1336,7 @@ class StackcopyGUI(ctk.CTk):
         assert self._pending is not None
         preview = self._pending[3]
         if returncode == 0 and self._total == 0:
+            self._show_zero_plan_rows()
             self._show_result(
                 "Nothing found",
                 "No supported photos or videos matched this import. Check that you chose the card or its DCIM folder.",
@@ -1340,14 +1353,9 @@ class StackcopyGUI(ctk.CTk):
         elif returncode == 0:
             elapsed = max(0.001, time.perf_counter() - self._started_at)
             byte_count = int(self._plan.get("bytes", 0)) if self._plan else 0
-            rate = byte_count / elapsed if byte_count else 0
-            details = [format_duration(elapsed)]
-            if byte_count:
-                details.extend((format_bytes(byte_count), f"{format_bytes(rate)}/s"))
-            details.append("nothing failed")
             self._show_result(
                 f"{summary.get('imported', self._total)} files imported",
-                " · ".join(details),
+                success_metrics(elapsed, byte_count),
                 problems=0,
                 allow_open=True,
                 success=True,
@@ -1366,6 +1374,19 @@ class StackcopyGUI(ctk.CTk):
                 problems=max(1, problems),
                 allow_open=False,
             )
+
+    def _show_zero_plan_rows(self) -> None:
+        """Keep the plan visible and explicit when the scan finds no media."""
+        self.plan_heading_var.set("Where these 0 files will land")
+        self.plan_headline_vars["stack_output"].set(
+            "0 finished stacked photos — renamed with ‘stacked’ added to the name"
+        )
+        self.plan_headline_vars["stack_input"].set(
+            "0 frames that fed those stacks — kept in case you want to stack the RAWs yourself"
+        )
+        self.plan_headline_vars["other"].set(
+            "0 single shots and videos — names untouched, dated folders as Lightroom would make them"
+        )
 
     def _show_result(
         self,
