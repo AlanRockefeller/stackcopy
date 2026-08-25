@@ -117,6 +117,27 @@ class ButtonLabelTests(unittest.TestCase):
         )
 
 
+class ModeChangeTests(unittest.TestCase):
+    def test_mode_change_relabels_cached_plan_without_scheduling_a_scan(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_generation = 7
+        window._plan = plan_payload()
+
+        gui.StackcopyGUI._on_mode_changed(window, gui.COPY_MODE)
+
+        window._sync_mode_help.assert_called_once_with()
+        window._schedule_save.assert_called_once_with()
+        window._refresh_idle_plan.assert_called_once_with()
+        window._schedule_plan_scan.assert_not_called()
+        self.assertEqual(window._plan_generation, 7)
+        self.assertEqual(window._plan, plan_payload())
+
+    def test_card_empty_expectation_is_derived_from_current_mode(self):
+        plan = plan_payload()
+        self.assertTrue(gui.source_will_be_empty(plan, leave_on_card=False))
+        self.assertFalse(gui.source_will_be_empty(plan, leave_on_card=True))
+
+
 class TerminalSummaryTests(unittest.TestCase):
     def test_success_metrics_include_time_bytes_rate_and_failure_state(self):
         self.assertEqual(

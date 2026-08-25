@@ -158,6 +158,18 @@ def import_button_label(
     return f"{action} {int(plan['total'])} files"
 
 
+def source_will_be_empty(
+    plan: dict[str, object] | None, *, leave_on_card: bool
+) -> bool:
+    """Derive the mode-sensitive card-empty expectation from a cached plan."""
+    return bool(
+        plan
+        and not leave_on_card
+        and plan.get("source_is_removable")
+        and plan.get("source_would_be_empty_after")
+    )
+
+
 def source_inside_destination_error(
     source: str, lightroom_dir: str, stack_input_dir: str
 ) -> str | None:
@@ -793,9 +805,7 @@ class StackcopyGUI(ctk.CTk):
     def _on_mode_changed(self, _value: str | None = None) -> None:
         self._sync_mode_help()
         self._schedule_save()
-        self._plan_generation += 1
         self._refresh_idle_plan()
-        self._schedule_plan_scan()
 
     def _on_detection_changed(self) -> None:
         self._schedule_save()
@@ -854,8 +864,6 @@ class StackcopyGUI(ctk.CTk):
         args = ["--lightroomimport", source, "--plan-json"]
         if not self.detect_stacks_var.get():
             args.append("--no-stack-detection")
-        if self.mode_var.get() == COPY_MODE:
-            args.append("--leave-on-card")
         command, env = cli_command(args)
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = self.dst_var.get().strip()
         env["STACKCOPY_STACK_INPUT_DIR"] = self.stk_var.get().strip()
@@ -1434,12 +1442,8 @@ class StackcopyGUI(ctk.CTk):
         self.progress.grid_remove()
         self.current_file_label.grid_remove()
         self._update_counter_cards(problems=problems, terminal=success)
-        show_empty = bool(
-            success
-            and self._plan
-            and self.mode_var.get() == MOVE_MODE
-            and self._plan.get("source_is_removable")
-            and self._plan.get("source_would_be_empty_after")
+        show_empty = success and source_will_be_empty(
+            self._plan, leave_on_card=self.mode_var.get() == COPY_MODE
         )
         if show_empty:
             self.card_empty_note.grid()
