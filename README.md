@@ -8,11 +8,43 @@ Prefer a window to the command line? There's a point-and-click [graphical interf
 
 ## How it works
 
-The script finds stacked images by looking for JPG files that have no corresponding RAW file. This is the only reliable way I've found to detect which images are the stacked versions — the file sizes and EXIF data are not unique for photos created with in-camera stacking.
+In Lightroom modes, Stackcopy first looks for the Olympus/OM System
+`StackedImage` MakerNote. A decoded `Focus-stacked (N images)` value confirms
+the output and tells Stackcopy exactly how many preceding components to select.
+A decoded `No` (or another non-focus mode) rules the JPEG out. When that tag is
+unavailable, Stackcopy retains its conservative JPG/RAW sequence-and-timestamp
+heuristic.
+
+MakerNote reading uses ExifTool when it is available, in batches rather than one
+process per JPEG. ExifTool is optional: Stackcopy still has no required runtime
+dependency beyond Python's standard library. An old ExifTool that cannot decode
+the camera's MakerNotes is treated as unavailable, never as a negative result.
+
+A batch is never discarded wholesale. ExifTool exits nonzero when any single file
+in the batch fails, so Stackcopy parses its JSON regardless of the exit status:
+valid entries are used, and only the files carrying an error — or files ExifTool
+never reported on — stay unknown and fall back to the heuristic. One damaged
+JPEG therefore costs one file's metadata, not the whole card's. When anything
+does degrade (a nonzero exit, a timeout, unparseable output), a single concise
+warning names how many files fall back. The ordinary absence of `StackedImage`
+on a healthy file is not degradation and is never reported.
+
+A stack may legitimately cross from one camera folder into the next
+(`100OMSYS` → `101OMSYS`), and Stackcopy supports that. But the previous folder
+may only *extend* a sequence past the boundary — it may never supply a number
+that belongs inside the current folder's own range. If the numbering overlaps or
+has reset, nothing is borrowed across the boundary at all. A frame reached across
+a folder boundary must also carry a plausible capture time; metadata proves the
+output is an N-frame stack, but it proves nothing about a file sitting in a
+different folder, so an unrelated older photo that happens to occupy a missing
+number is imported as an ordinary photo instead.
+
+For `--copy`, `--rename`, and `--stackcopy`, the simple JPG-without-RAW rule is
+still used.
 
 The matching is case-insensitive, so `IMG_1234.JPG` will match with `img_1234.orf` just fine.
 
-Supported RAW extensions: `.orf`, `.cr2`, `.nef`, `.arw`, `.dng`, `.pef`, `.rw2`, `.raf`, `.raw`, `.sr2`.
+Supported RAW extensions: `.orf`, `.cr2`, `.nef`, `.arw`, `.dng`, `.pef`, `.rw2`, `.raf`, `.raw`, `.sr2`. Olympus/OM `.ORI` originals are preserved as a separate companion type, so an `.ORF` and `.ORI` with the same stem cannot replace one another. An `.ORI` counts as a companion original — a JPG that has one is not treated as an unpaired in-camera output — but it is not ordinary RAW backing, so it never makes a frame look like a RAW-backed focus-stack input on its own.
 
 Supported video extensions for `--lightroomimport`: `.mov`, `.mp4`, `.m4v`, `.avi`, `.mts`, `.m2ts`, `.mpg`, `.mpeg`, `.wmv`.
 
@@ -230,6 +262,9 @@ Done. Imported 342 files in 18.4s. Breakdown: 12 stacks (12 stacked outputs, 96 
 # Creates files like: "IMG_1234 Jackson State Forest stacked.jpg"
 ```
 
+The prefix also applies to stacked outputs in `--lightroom` and
+`--lightroomimport`.
+
 ### Debug stack detection
 
 If stacks aren't being detected correctly:
@@ -260,7 +295,7 @@ Date filters work with all modes and use filesystem modification dates. In `--li
 
 ### Other options
 
-- `--prefix PREFIX` — Add custom text before " stacked" in filenames
+- `--prefix PREFIX` — Add custom text before " stacked" in filenames. Because the prefix becomes part of a filename, path separators, NUL and control characters, and a bare `.` or `..` are rejected with an explanation rather than silently rewritten (plus `: * ? " < > |` on Windows). Ordinary human-readable prefixes, spaces included, are unaffected.
 - `--dry` / `--dry-run` — Preview what would happen without making changes
 - `-v` / `--verbose` — Show detailed info about each file processed
 - `-i` / `--interactive` — Ask for confirmation before moving (`--lightroomimport` only)
@@ -279,11 +314,25 @@ For `--lightroom` and `--lightroomimport`, the script does more work to identify
 
 - Groups files by numeric sequence (e.g., `P8081885` through `P8081891`). Numeric stack detection requires at least six digits in the numeric portion of the filename.
 - Confirms frames were taken within a short time window of each other (6 seconds between inputs, up to 120 seconds lag for the output)
-- Accepts stacks with 3–15 input frames
+- Accepts heuristic stacks with 3–15 input frames
 - Rejects candidates when a tight burst continues before or after them, to avoid moving focus-bracketing frames even when an older photo breaks the backward scan
 - Treats inputs already claimed by a later valid stack as a stack boundary, preserving rapid consecutive in-camera stacks
 
-Automatic stack sorting in `--lightroom` and `--lightroomimport` requires RAW-backed input frames. If a camera folder and filename-prefix group contains JPGs but no RAW files, Stackcopy does not guess: it disables automatic stack detection for that group and imports the JPGs normally. The one exception is a stack that spans a camera roll boundary: during a recursive scan, if the previous adjacent camera-roll directory has RAW files under the same filename prefix, stack detection stays enabled for the JPG-only group so its input frames can be found in that earlier folder. Shoot RAW+JPG if you want automatic stack sorting.
+The 3–15 limit and RAW-backing requirement apply only to the heuristic. A
+metadata-confirmed stack may contain more than 15 inputs and does not require
+RAW files as proof. Sequence and timestamps are then localization and sanity
+signals, not the proof of the stack. If some of the camera-reported N preceding
+frames are missing, Stackcopy keeps the confirmed `stacked` output classification,
+prints a warning, and sorts the available consecutive inputs; it does not
+silently reclassify the output as an ordinary photo.
+
+For the fallback heuristic, automatic stack sorting requires ordinary
+RAW-backed input frames (`.ORF`, `.CR2`, `.NEF`, `.ARW`, and friends — `.ORI`
+companions do not count). If a camera folder and filename-prefix group contains JPGs but no RAW
+files, Stackcopy does not guess: it imports the JPGs normally and recommends
+RAW+JPG. A mixed set is rejected with neutral diagnostics instead of claiming
+RAW capture is disabled. The adjacent-camera-roll exception remains in place
+so a stack can span folders such as `100OMSYS` and `101OMSYS`.
 
 Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or rejected.
 
@@ -291,12 +340,27 @@ Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or r
 
 stackcopy is designed to be cautious:
 
-- **Atomic file handling**: Same-filesystem moves use an atomic rename. Copies and cross-filesystem moves are written to a temporary file in the destination directory and atomically replaced, avoiding partially written destination files. After a successful cross-filesystem copy, stackcopy attempts to delete the source; if that deletion fails, the move is still reported as complete and the failure is printed so the leftover source file can be handled manually.
+- **Atomic file handling**: Same-filesystem moves use an atomic rename. Copies and cross-filesystem moves are written to a temporary file in the destination directory and atomically replaced, avoiding partially written destination files.
+- **Durability before deletion**: A cross-filesystem move never deletes the source until the destination has been flushed to storage. The copy is written to a temporary file, `fsync`ed through a descriptor opened before the source's (often read-only) permissions are stamped onto it, atomically renamed into place, and — on platforms that support it — the destination directory entry is flushed too; only then is the source removed. If the file flush fails, the source is left untouched and the operation is reported as a failure, not a move. Windows has no directory file descriptor and NTFS journals its own metadata, so directory flushing is skipped there rather than failing the import; the same applies to exFAT cards, CIFS shares, and WSL's `/mnt/` bridge, which report a one-time note.
+- **Every file lands in exactly one outcome**: The `--lightroomimport` summary keeps normal placements, recoveries, stuck sources, and failures apart — `Files safely placed: N` broken into `Imported normally`, `Recovered to fallback destination`, and `Copied successfully but source could not be removed`, with `Failures` counting only files that never reached any destination. A recovered file is never reported as a normal import, and the headline `Imported N files` counts only the files that actually left the card. `--lightroom` follows the same rule: a source it could not remove is not counted in `Moved N input files`.
+- **"Copied, but the source remains"**: If the destination copy succeeds and the source deletion then fails, stackcopy does not call that a completed move. It is counted and reported separately (`Copied successfully but source could not be removed: N`, with the paths listed), the destination is not retried or recovered, and the run exits nonzero. Re-running is safe: the matching destination is recognized as identical and nothing is duplicated. Copies made because `--leave-on-card` was requested are ordinary successes.
+- **Visible forced overwrites**: `--force` may replace a differing file that predates the run, but never silently. Every such destination is printed (`Overwriting differing existing file because --force:`, or `Would overwrite ...` in a dry run) with or without `--verbose`, and the summary ends with `Existing files overwritten by --force: N`. Identical destinations, 0-byte repairs, and same-run collision suffixes are not force-overwrites and are not counted.
+- **Ambiguous stems are refused, not guessed**: A stem can hold only one file of each logical type. If two files map to the same type — `P8081868.ORF` and `P8081868.DNG`, or `X.JPG` and `X.JPEG`, or `X.MOV` and `X.MP4` — stackcopy names every file involved, leaves the entire stem untouched, keeps it out of stack detection, and exits nonzero. It never picks one and silently strands the other on the card. The summary counts every physical file left behind, not just the duplicated ones: a `P8081868.JPG` + `.ORF` + `.DNG` stem reports `Ambiguous stems left untouched: 1 (3 files)`.
+- **Source and destination must not overlap**: `--lightroomimport` refuses to run when the source folder is, or is inside, the Lightroom import destination or the stack-input destination. Real paths are compared, so a symlink or a different spelling cannot get past it, and the check runs before anything is scanned or moved. The GUI applies the identical check before launching. (The inverse layout — a destination inside the source — still works: the recursive scan excludes its own destination trees.)
+- **Case is not a loophole on Windows volumes**: Every comparison that gates a destructive step — is this source the same file as its destination, is this source inside a destination tree — folds case when the path lives where case does not distinguish files: Windows, macOS, and a Windows drive reached through WSL's `/mnt/c/...` bridge, which Python's own `normcase()` leaves untouched on Linux. `/mnt/c/Photos/P8081234.JPG` and `/mnt/c/photos/p8081234.jpg` are recognized as one photo even on a mount that reports no usable inode numbers, so a "move" can never delete the only copy. Ordinary Linux paths stay case-sensitive.
 - **Self-healing**: Automatically detects and replaces 0-byte placeholder files left behind by interrupted previous runs.
-- **Identical-file detection**: If the destination already has the same content, the operation proceeds safely (deleting the source for moves, skipping for copies).
-- **Collision-safe renaming**: When a destination file already exists with different content, stackcopy adds a suffix (e.g., `IMG_1234__2.JPG`) to avoid overwriting. This keeps paired files (JPG + RAW) together under the same suffix.
-- **Disk space preflight**: Before large operations, checks available disk space and prompts for confirmation if it looks tight.
+- **Identical-file detection**: If the destination already has the same content, the operation proceeds safely even with `--force` (deleting only the redundant source for moves, skipping the destination write for copies).
+- **Collision-safe renaming**: When a destination file already exists with different content, stackcopy adds a suffix (e.g., `IMG_1234__2.JPG`) to avoid overwriting. This keeps paired files (JPG + RAW + ORI) together under the same suffix. `--force` may replace a file that predates the run, but it never lets one source in the current run overwrite another. If every candidate suffix is taken, Stackcopy refuses to guess: it reports the stem, leaves those files on the source, and exits nonzero rather than reusing a rejected name.
+- **Disk space preflight**: The import plan is shown before any low-space confirmation. Dry runs report low space but never prompt or mutate files.
 - **Safe to re-run**: Stackcopy avoids adding "stacked" a second time, detects identical destination files, and is designed so interrupted imports can be run again safely.
+- **Visible leftovers**: Unrecognized extensions are left on the source and summarized by extension rather than silently ignored.
+- **Clean interruption and recovery**: In both `--lightroom` and `--lightroomimport`, a destination-directory error is reported with its destination and affected files, counted as a failure, and the summary is still printed. Ctrl-C stops new operations, leaves completed work in place and unstarted files untouched, prints a partial summary, and exits with status 130. Recovery puts otherwise stranded files into the normal dated Lightroom hierarchy, reports them separately from successful primary placements, and counts only genuinely unrecovered failures as failures.
+- **Recovery is a degraded outcome, not a plain success**: Recovered files are safe, but they are not where the plan said they would go. When anything is recovered, stackcopy prints `Import completed with recovery.` with the fallback destinations and a recommendation to review, and exits nonzero. The GUI shows "Import finished, but not as planned" instead of a normal completion. A fully successful import still exits 0.
+- **Companion files stay in one date folder**: A frame's JPG, RAW, and `.ORI` derive their destination date from a single canonical timestamp (RAW first, then `.ORI`, then JPG), so mtimes that straddle midnight cannot split one frame across two date directories. Videos are independent recordings and keep their own date.
+
+### After an interrupted import
+
+Re-running is always safe. For the best result on OM/Olympus focus stacks, re-run with a current ExifTool installed. An interrupted import may already have moved some components of a stack out of the source folder, and the JPG/RAW sequence heuristic can then classify the remainder differently on the second pass. The `StackedImage` MakerNote does not depend on which siblings are still present, so with ExifTool available the confirmed outputs and their frame counts are recognized exactly as they were the first time.
 
 ### Olympus / OM System file numbering
 
@@ -341,7 +405,7 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.5.9
+- **Version**: 1.6.0
 - **Date**: August 24, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy

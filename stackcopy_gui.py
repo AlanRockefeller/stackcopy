@@ -44,6 +44,36 @@ if os.environ.get("STACKCOPY_RUN_CLI") == "1":
 import customtkinter as ctk  # noqa: E402  (must follow the CLI dispatch above)
 from tkinter import filedialog, messagebox  # noqa: E402
 
+# The GUI's pre-flight checks must reach exactly the same verdict as the CLI's,
+# so the containment test is imported rather than re-implemented.  A bundle
+# that somehow ships without stackcopy.py falls back to a minimal copy, which
+# tests assert is equivalent.
+try:
+    from stackcopy import path_is_within  # noqa: E402
+except Exception:  # pragma: no cover - only reachable in a broken bundle
+
+    def path_is_within(path: str, root: str) -> bool:
+        """Fallback duplicate of stackcopy.path_is_within (see that function)."""
+        import platform
+        import re
+
+        def case_insensitive(candidate: str) -> bool:
+            if platform.system() in ("Windows", "Darwin"):
+                return True
+            normalized = os.path.abspath(candidate).replace(os.sep, "/")
+            return bool(re.match(r"^/mnt/[A-Za-z](?:/|$)", normalized))
+
+        keys = [
+            os.path.normcase(os.path.abspath(os.path.normpath(p))) for p in (path, root)
+        ]
+        if any(case_insensitive(p) for p in (path, root)):
+            keys = [key.casefold() for key in keys]
+        try:
+            return os.path.commonpath(keys) == keys[1]
+        except ValueError:
+            return False
+
+
 PROGRESS_SENTINEL = "@@SCPROGRESS"
 LOW_SPACE_SENTINEL = "@@SCLOWSPACE"
 TERMINATE_TIMEOUT_SECONDS = 3.0
@@ -112,6 +142,43 @@ def parse_progress(line: str) -> tuple[dict[str, str], str | None]:
             key, value = tok.split("=", 1)
             fields[key] = value
     return fields, fname
+
+
+def source_inside_destination_error(
+    source: str, lightroom_dir: str, stack_input_dir: str
+) -> str | None:
+    """Reject importing out of one of the import's own destination trees.
+
+    Mirrors the CLI's own refusal so the GUI cannot hand stackcopy a layout it
+    will only reject after launching.  Real paths are compared with the CLI's
+    own containment helper, so a symlink, a different spelling of the same
+    folder, or a case-only difference on a Windows/WSL volume cannot slip past.
+    """
+    try:
+        real_source = os.path.realpath(source)
+    except OSError:
+        return None
+    for label, destination in (
+        ("Lightroom destination", lightroom_dir),
+        ("stack-input folder", stack_input_dir),
+    ):
+        try:
+            real_destination = os.path.realpath(destination)
+        except OSError:
+            continue
+        if path_is_within(real_source, real_destination):
+            relation = (
+                "is" if path_is_within(real_destination, real_source) else "is inside"
+            )
+            return (
+                f"The source folder {relation} the {label}.\n\n"
+                f"Source:\n{real_source}\n\n"
+                f"Destination:\n{real_destination}\n\n"
+                "Importing a destination back into itself would re-sort and "
+                "rename files Stackcopy has already filed. Choose the camera "
+                "card or another folder outside the destinations."
+            )
+    return None
 
 
 def parse_low_space_report(line: str) -> dict[str, object] | None:
@@ -214,6 +281,7 @@ class StackcopyGUI(ctk.CTk):
         self._proc: subprocess.Popen | None = None
         self._queue: queue.Queue = queue.Queue()
         self._total = 0
+        self._degraded = False
         self._running = False
         self._assume_yes = False
         self._terminated_by_user = False
@@ -470,6 +538,10 @@ class StackcopyGUI(ctk.CTk):
                 "The Lightroom destination and stack-input folder must be different.",
             )
             return
+        nested_error = source_inside_destination_error(src, dst, stk)
+        if nested_error:
+            messagebox.showerror("Stackcopy", nested_error)
+            return
 
         args = ["--lightroomimport", src]
         if self.dry_var.get():
@@ -503,6 +575,7 @@ class StackcopyGUI(ctk.CTk):
         self._tail = []
         self._low_space_report = None
         self._total = 0
+        self._degraded = False
         self._terminated_by_user = False
 
         self._set_running(True)
@@ -608,6 +681,7 @@ class StackcopyGUI(ctk.CTk):
             self.status_var.set(f"{action} {fname or ''}   ({done} / {self._total})")
         elif phase == "done":
             self.progress.set(1.0 if total else 0)
+            self._degraded = fields.get("degraded") == "1"
 
     def _handle_done(self, rc: int) -> None:
         terminated_by_user = self._terminated_by_user
@@ -641,6 +715,15 @@ class StackcopyGUI(ctk.CTk):
                 action = "copied" if self.leave_on_card_var.get() else "moved"
                 self.status_var.set(f"Import complete - {self._total} files {action}.")
                 self.open_btn.configure(state="normal")
+        elif self._degraded:
+            # The files are safe, but they were not all placed as planned, so
+            # this must never read as an ordinary successful import.
+            self.progress.set(1.0 if self._total else 0)
+            self.status_var.set(
+                "Import finished, but not as planned - review the log before "
+                "erasing the card."
+            )
+            self.open_btn.configure(state="normal")
         else:
             self.status_var.set(f"stackcopy exited with code {rc} - see log.")
 

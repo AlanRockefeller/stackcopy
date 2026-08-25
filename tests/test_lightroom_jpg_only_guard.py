@@ -139,7 +139,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.strip(), "Stackcopy 1.5.8")
+        self.assertEqual(result.stdout.strip(), "Stackcopy 1.6.0")
 
     def test_lightroomimport_jpg_only_repro_imports_all_as_remaining(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -704,7 +704,7 @@ class LightroomJpgOnlyGuardTests(unittest.TestCase):
             self.assertNotIn("JPG-only import detected", result.stdout)
             self.assertEqual(result.stdout.count("Stack detection skipped in "), 1)
             self.assertIn(
-                "inferred input frames are not all RAW-backed. Enable RAW+JPG for automatic stack sorting.",
+                "none of the inferred input frames are RAW-backed. Enable RAW+JPG for automatic stack sorting.",
                 result.stdout,
             )
             self.assertIn(

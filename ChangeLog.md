@@ -1,5 +1,49 @@
 # Change Log
 
+## **1.6.0 - 2026-08-24**
+
+### Added
+
+- Uses optional, batched ExifTool reads of Olympus/OM `StackedImage` metadata to confirm focus stacks and their exact frame counts.
+- Falls back to the existing safe heuristic when metadata is missing, unsupported, malformed, or unreadable.
+- Preserves `.ORI` companions separately from `.ORF` files and reports other unrecognized files left on the source.
+
+### Fixed
+
+- Prevented `--force` from overwriting another source file planned by the same run, including case-only destination collisions on Windows-mounted WSL filesystems.
+- Treats identical destinations as no-ops even with `--force`, so low-space planning matches execution; moves delete only the redundant source and copies skip the write.
+- Made dry runs match real behavior for identical re-imports and zero-byte destination repair.
+- Avoided duplicate full-file comparisons during stable identical re-imports.
+- Cleanly handles destination-directory failures and Ctrl-C with useful partial summaries in both `--lightroom` and `--lightroomimport`: the summary survives, failures are counted, completed operations are left in place, and an interrupted run exits with status 130.
+- Fixed a `KeyError: 'raw'` crash during heuristic stack detection when a stem had a `.ORI` companion but no ordinary RAW file. `.ORI` is now tracked separately from RAW backing: it is still preserved as a first-class companion, but it no longer makes a frame look like a RAW-backed focus-stack input. Camera metadata remains authoritative for stacks whose components are JPG+ORI.
+- Collision-suffix exhaustion now fails safely. If no collision-free destination name can be found, Stackcopy reports the affected stem, leaves the files on the source, and exits nonzero (dry runs included) instead of reusing a name that just failed its collision check.
+- Corrected recovery failure counts, preserved `stacked` names and prefixes during recovery, and reports fallback recoveries separately from files placed in the stack-input archive.
+- Corrected trailing numeric-stem parsing and misleading mixed RAW/JPG guidance.
+- Shows the import plan before low-space checks; dry runs never ask for confirmation.
+- Handles invalid filesystem timestamps without crashing.
+- Added a durability barrier before a cross-device source is deleted: the copy is flushed with `fsync`, atomically renamed, and (where the platform supports it) the destination directory entry is flushed, all before the source is removed. A failed flush leaves the source untouched and reports a failure instead of a move. Windows, exFAT cards, CIFS shares, and WSL's `/mnt/` bridge cannot flush directory entries; that is handled as a platform limit with a one-time note, not an import failure.
+- A cross-device copy whose source deletion fails is no longer reported as a completed move. It is tracked as its own outcome, listed by path, excluded from the move total, not retried or recovered (so no duplicate is written), and the run exits nonzero. `--leave-on-card` copies remain ordinary successes.
+- `--force` overwrites of pre-existing, differing destinations are always announced, with or without `--verbose`, in both dry and real runs, and totalled as `Existing files overwritten by --force: N`. Identical destinations, 0-byte repairs, and same-run collision suffixes are excluded.
+- Two files that map to the same logical type for one stem (`P8081868.ORF` + `P8081868.DNG`, `X.JPG` + `X.JPEG`, `X.MOV` + `X.MP4`) no longer let one silently replace the other in the scan database. Every file involved is named, the whole stem is left untouched and kept out of stack detection, and the run exits nonzero.
+- A nonzero ExifTool exit no longer discards an entire batch's metadata. The JSON is parsed regardless of exit status, valid entries are used, and only files carrying an error or missing from the output stay unknown. Degradation is summarized in one concise warning per invocation; ordinary absence of `StackedImage` is silent. The subprocess now uses `stdin=DEVNULL` and explicit UTF-8 decoding with replacement.
+- Frames from the previous adjacent camera folder can no longer be substituted for missing numbers inside the current folder. A previous folder is used only when its numbers all sit strictly below the current folder's lowest number; overlapping or reset numbering borrows nothing. As a secondary boundary, a frame reached across a folder boundary must also carry a plausible capture time, so an unrelated older photo occupying a missing number is imported as an ordinary photo. Legitimate stacks crossing `100OMSYS` → `101OMSYS` still work, and a metadata-confirmed output stays confirmed when inputs are missing.
+- Recovery into the fallback Lightroom hierarchy is now reported as a degraded outcome and exits nonzero: `Import completed with recovery.` names the fallback destinations and recommends review. Recovered files are still kept distinct from unrecovered failures, and a fully successful import still exits 0. The GUI reports "Import finished, but not as planned" rather than a normal completion.
+- `--lightroomimport` refuses to run when the source folder is, or is inside, the Lightroom import or stack-input destination, comparing real paths so symlinks and alternative spellings cannot defeat the check. The GUI performs the same validation before launching.
+- Same-file detection no longer trusts `(device, inode)` on filesystems that report inode zero; those fall through to size and content comparison, and a move onto the same path is still recognized by real path so it can never delete its own destination.
+- A frame's JPG, RAW, and `.ORI` now share one canonical date (RAW, then `.ORI`, then JPG), so companion files whose mtimes straddle midnight are no longer split across adjacent date folders. Videos keep their own date.
+- `--prefix` is validated: path separators, NUL and control characters, a bare `.` or `..` (and `: * ? " < > |` on Windows) are rejected with an explanation rather than silently rewritten. Ordinary prefixes, spaces included, are unchanged.
+- Path comparisons that gate destructive steps now fold case wherever case cannot distinguish files — Windows, macOS, and Windows volumes reached through WSL's `/mnt/` bridge, which `os.path.normcase()` leaves untouched on Linux. Same-file detection, source-inside-destination validation (CLI and GUI, which now share one helper), and containment checks all inherit it, so `/mnt/c/Photos/P8081234.JPG` and `/mnt/c/photos/p8081234.jpg` are recognized as one photo even when the mount reports inode zero, and a move can never unlink the only copy. Ordinary Linux paths stay case-sensitive.
+- A durable cross-device copy now holds the temp file's writable descriptor open across `copystat`, so a write-protected camera original can no longer make the `fsync` step fail with a permission error on a copy that actually succeeded. Ordering, metadata preservation, and the "a failed flush keeps the source" guarantee are unchanged.
+- Directory-`fsync` errors are classified more carefully: only documented "this object cannot be fsynced" errnos (`EINVAL`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`) count as "unsupported" and permit the source to be deleted. Permission errors no longer do: `EPERM` and `EACCES` — at either the open or the flush step — are failures, so the destination and the source both remain and the run exits degraded. A denial is not proof that directory flushing is unimplemented, and an ambiguous durability result must keep the irreplaceable original.
+- The ambiguous-stem summary counts every physical file the stem leaves on the card, not only the duplicated ones: `P8081868.JPG` + `.ORF` + `.DNG` now reports `Ambiguous stems left untouched: 1 (3 files)`.
+- `--lightroomimport` accounting categories are now mutually exclusive: `Files safely placed` splits into `Imported normally`, `Recovered to fallback destination`, and `Copied successfully but source could not be removed`, with `Failures` counting only unrecovered files. A recovered file is no longer described as a normal import, and the headline total counts only files that actually left the card.
+- Legacy `--lightroom` no longer counts a file whose source could not be removed in `Moved N input files`; it is reported on its own line and the run still exits nonzero.
+
+### Changed
+
+- Metadata-confirmed stacks may exceed the heuristic 15-frame limit and remain confirmed when some inputs are missing.
+- Updated `--prefix` help and Lightroom documentation.
+
 ## **1.5.9 - 2026-08-24**
 
 ### Fixed
