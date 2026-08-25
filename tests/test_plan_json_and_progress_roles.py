@@ -87,6 +87,28 @@ class PlanJsonTests(unittest.TestCase):
             self.assertFalse(lightroom.exists())
             self.assertFalse(stack_input.exists())
 
+    def test_plan_json_suppresses_scan_progress_sentinel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "card"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+            write_file(source / "P8080001.ORF", b"raw", datetime(2026, 8, 25))
+            stderr = io.StringIO()
+
+            with mock.patch.object(stackcopy, "_PROGRESS_ENABLED", True):
+                code, output = run_main(
+                    ["--lightroomimport", str(source), "--plan-json"],
+                    lightroom=lightroom,
+                    stack_input=stack_input,
+                    metadata={},
+                    extra_contexts=(redirect_stderr(stderr),),
+                )
+
+            self.assertEqual(code, 0)
+            self.assertIsNotNone(json.loads(output))
+            self.assertNotIn(stackcopy._PROGRESS_SENTINEL, stderr.getvalue())
+
     def test_leave_on_card_plan_does_not_claim_source_will_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

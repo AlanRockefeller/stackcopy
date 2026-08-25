@@ -765,24 +765,50 @@ class StackcopyGUI(ctk.CTk):
         self.log_frame.grid_remove()
 
     def _draw_icon(self, parent, row: int, kind: str) -> None:
-        try:
-            color = self._apply_appearance_mode(parent.cget("fg_color"))
-            if color == "transparent":
-                color = self._apply_appearance_mode(self.cget("fg_color"))
-        except Exception:
-            color = "#242424"
+        def current_colors() -> tuple[str, str]:
+            try:
+                background = self._apply_appearance_mode(parent.cget("fg_color"))
+                if background == "transparent":
+                    background = self._apply_appearance_mode(self.cget("fg_color"))
+                button_theme = ctk.ThemeManager.theme["CTkButton"]
+                ink = self._apply_appearance_mode(button_theme["fg_color"])
+                return background, ink
+            except Exception:
+                return "#242424", "#1f6aa5"
+
+        color, ink = current_colors()
         canvas = ctk.CTkCanvas(
             parent, width=38, height=38, highlightthickness=0, bg=color
         )
         canvas.grid(row=row, column=0, rowspan=2, padx=(13, 9), pady=7)
-        ink = "#3b8ed0"
         if kind == "card":
-            canvas.create_polygon(9, 5, 28, 5, 33, 10, 33, 33, 9, 33, fill=ink)
-            canvas.create_rectangle(14, 9, 27, 17, fill=color, outline=color)
+            canvas.create_polygon(
+                9, 5, 28, 5, 33, 10, 33, 33, 9, 33, fill=ink, tags="icon_fill"
+            )
+            canvas.create_rectangle(
+                14, 9, 27, 17, fill=color, outline=color, tags="icon_bg"
+            )
         elif kind == "photo":
-            canvas.create_rectangle(5, 7, 33, 31, outline=ink, width=3)
-            canvas.create_oval(22, 11, 28, 17, fill=ink, outline=ink)
-            canvas.create_polygon(8, 28, 17, 17, 23, 24, 27, 20, 31, 28, fill=ink)
+            canvas.create_rectangle(
+                5, 7, 33, 31, outline=ink, width=3, tags="icon_outline"
+            )
+            canvas.create_oval(
+                22, 11, 28, 17, fill=ink, outline=ink, tags="icon_fill"
+            )
+            canvas.create_polygon(
+                8,
+                28,
+                17,
+                17,
+                23,
+                24,
+                27,
+                20,
+                31,
+                28,
+                fill=ink,
+                tags="icon_fill",
+            )
         elif kind == "frames":
             for offset in (0, 4, 8):
                 canvas.create_rectangle(
@@ -792,10 +818,40 @@ class StackcopyGUI(ctk.CTk):
                     27 + offset,
                     outline=ink,
                     width=2,
+                    tags="icon_outline",
                 )
         else:
-            canvas.create_rectangle(5, 12, 33, 31, outline=ink, width=3)
-            canvas.create_polygon(5, 12, 15, 12, 18, 8, 28, 8, 31, 12, fill=ink)
+            canvas.create_rectangle(
+                5, 12, 33, 31, outline=ink, width=3, tags="icon_outline"
+            )
+            canvas.create_polygon(
+                5,
+                12,
+                15,
+                12,
+                18,
+                8,
+                28,
+                8,
+                31,
+                12,
+                fill=ink,
+                tags="icon_fill",
+            )
+
+        def refresh_icon(_appearance_mode: str) -> None:
+            background, foreground = current_colors()
+            canvas.configure(bg=background)
+            canvas.itemconfigure("icon_fill", fill=foreground, outline=foreground)
+            canvas.itemconfigure("icon_outline", outline=foreground)
+            canvas.itemconfigure("icon_bg", fill=background, outline=background)
+
+        ctk.AppearanceModeTracker.add(refresh_icon, canvas)
+        canvas.bind(
+            "<Destroy>",
+            lambda _event: ctk.AppearanceModeTracker.remove(refresh_icon),
+            add="+",
+        )
 
     def _text_button(self, parent, text: str, command) -> ctk.CTkButton:
         return ctk.CTkButton(

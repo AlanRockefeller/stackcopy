@@ -2289,7 +2289,7 @@ def main():
     #   },
     #   ...
     # }
-    if operation_mode == "lightroomimport":
+    if operation_mode == "lightroomimport" and not args.plan_json:
         _emit_progress(phase="scan", done=0, total=0)
     scan_recursively = operation_mode == "lightroomimport"
     scan_exclude_dirs = ()
