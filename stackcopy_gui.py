@@ -630,6 +630,19 @@ class StackcopyGUI(ctk.CTk):
             anchor="e",
             text_color=("gray40", "gray66"),
         ).grid(row=0, column=1, sticky="e")
+        self.result_body_var = ctk.StringVar(value="")
+        self.result_body_label = ctk.CTkLabel(
+            top,
+            textvariable=self.result_body_var,
+            anchor="w",
+            justify="left",
+            wraplength=820,
+            text_color=("gray32", "gray74"),
+        )
+        self.result_body_label.grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        self.result_body_label.grid_remove()
         self.progress = ctk.CTkProgressBar(self.activity)
         self.progress.grid(row=1, column=0, sticky="ew", padx=16, pady=(12, 0))
         self.progress.set(0)
@@ -1168,6 +1181,8 @@ class StackcopyGUI(ctk.CTk):
         self.progress.start()
         self.phase_var.set("Preparing…")
         self.meta_var.set("")
+        self.result_body_var.set("")
+        self.result_body_label.grid_remove()
         self.current_file_var.set("Waiting for Stackcopy to finish its safety checks…")
         self._update_counter_cards()
         threading.Thread(target=self._worker, args=(command, env), daemon=True).start()
@@ -1509,7 +1524,12 @@ class StackcopyGUI(ctk.CTk):
         self.result_controls.grid()
         self.open_btn.configure(state="normal" if allow_open else "disabled")
         self.phase_var.set(heading)
-        self.meta_var.set(details)
+        self.meta_var.set(details if success else "")
+        self.result_body_var.set("" if success else details)
+        if success or not details:
+            self.result_body_label.grid_remove()
+        else:
+            self.result_body_label.grid()
         self.progress.grid_remove()
         self.current_file_label.grid_remove()
         self._update_counter_cards(problems=problems, terminal=success)
