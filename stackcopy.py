@@ -554,6 +554,15 @@ def source_is_removable(source_dir: str) -> bool:
     if IS_MACOS:
         return path_is_within(absolute, "/Volumes")
     normalized = absolute.replace(os.sep, "/")
+    if _WINDOWS_BACKED_MOUNT_REGEX.match(normalized) or (
+        IS_WSL and _WSL_DRIVE_ROOT_REGEX.match(normalized)
+    ):
+        # A Windows volume reached through WSL's drive bridge.  /mnt/e may be
+        # a card reader but /mnt/c and /mnt/d are the machine's fixed disks,
+        # and nothing on this side of the bridge can tell them apart.  Say no:
+        # a missed "your card is empty" hint costs nothing, while a wrong one
+        # tells somebody to format their internal drive in the camera.
+        return False
     return normalized.startswith(("/media/", "/run/media/", "/mnt/"))
 
 
@@ -2603,11 +2612,14 @@ def main():
         relative_dir = record.get("relative_dir", ".")
         if relative_dir in warned_inputs_not_all_raw_backed_dirs:
             return
-        warned_inputs_not_all_raw_backed_dirs.add(relative_dir)
         raw_backed_count = sum(
             has_standard_raw(file_db[input_stem]) for input_stem in input_stems
         )
         if raw_backed_count == 0:
+            # Only the folder-level advice is once-per-folder.  A mixed set
+            # says nothing about RAW+JPG being off, so it must not consume
+            # the warning a later all-JPG stack in the same folder needs.
+            warned_inputs_not_all_raw_backed_dirs.add(relative_dir)
             print(
                 "Stack detection skipped in "
                 f"{describe_stack_detection_folder(record)}: none of the inferred "
@@ -2964,10 +2976,18 @@ def main():
         rejected_no_mtime = 0
         rejected_too_few_inputs = 0
         rejected_burst_safety = 0
+        skipped_claimed_as_input = 0
         skipped_missing_date = 0
         skipped_missing_at_plan = 0
 
         for output_stem in sorted(stacked_outputs, reverse=True):
+            if output_stem in claimed_input_stems:
+                # An earlier stack already took this frame as one of its
+                # inputs; planning it as an output too would queue two moves
+                # for the same source file.
+                skipped_claimed_as_input += 1
+                continue
+
             output_data = file_db[output_stem]
             jpg_record = output_data["files"].get("jpg")
             if not jpg_record:
@@ -3530,6 +3550,8 @@ def main():
 
         print(f"\n{dry_prefix}Planned Lightroom import for '{src_dir}':")
         print(f"  Stacked JPG candidates found:  {len(stacked_outputs)}")
+        if skipped_claimed_as_input:
+            print(f"  Skipped (claimed as input):    {skipped_claimed_as_input}")
         print(f"  Evaluated as potential stacks:  {stack_outputs_seen}")
         print(f"  Accepted stacks:               {accepted_stacks}")
         print(f"  Rejected stack candidates:     {total_rejected}")
@@ -3917,6 +3939,12 @@ def main():
 
         stack_output_order = sorted(stacked_outputs, reverse=True)
         for output_index, output_stem in enumerate(stack_output_order):
+            if output_stem in claimed_input_stems:
+                # An earlier stack already took this frame as one of its
+                # inputs; treating it as an output too would rename a file
+                # that is already queued to move somewhere else.
+                continue
+
             output_data = file_db[output_stem]
             jpg_record = output_data["files"].get("jpg")
             if not jpg_record:
