@@ -123,6 +123,27 @@ class ForcedOverwriteVisibilityTests(unittest.TestCase):
         )
         return source, lightroom, stack_input
 
+    def broken_commit(self):
+        """Fail the final commit while still letting the guard step work.
+
+        --force quarantines the file it is about to replace before writing
+        anything, so only the commit onto the real destination name may fail
+        here; the announcement has already been printed by then.
+        """
+        real_rename = stackcopy.atomic_rename_no_replace
+
+        def rename(src, dst):
+            # Let the quarantine, and the restore that puts it back, work.
+            if os.path.basename(os.fspath(src)).startswith(".__stackcopy_guard__"):
+                return real_rename(src, dst)
+            if os.path.basename(os.fspath(dst)) == "P8081868.ORF":
+                raise OSError(errno.EIO, "device failure")
+            return real_rename(src, dst)
+
+        return mock.patch.object(
+            stackcopy, "atomic_rename_no_replace", side_effect=rename
+        )
+
     def test_dry_run_announces_the_overwrite_and_counts_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, lightroom, stack_input = self.make_conflict(Path(tmp))
@@ -228,13 +249,7 @@ class ForcedOverwriteVisibilityTests(unittest.TestCase):
                 lightroom=lightroom,
                 stack_input=stack_input,
                 metadata={},
-                extra_contexts=(
-                    mock.patch.object(
-                        stackcopy.os,
-                        "replace",
-                        side_effect=OSError(errno.EIO, "device failure"),
-                    ),
-                ),
+                extra_contexts=(self.broken_commit(),),
             )
 
             self.assertEqual(code, 1, output)
@@ -463,7 +478,7 @@ class CrossDeviceDurabilityTests(unittest.TestCase):
     def instrumented(self, calls, *, fsync_file_error=None, directory_sync=None):
         """Patch the durability boundary and record the call order."""
         real_copyfile = stackcopy.shutil.copyfile
-        real_replace = stackcopy.os.replace
+        real_rename = stackcopy.atomic_rename_no_replace
         real_unlink = stackcopy.os.unlink
 
         def copyfile(src, dst, **kwargs):
@@ -479,11 +494,11 @@ class CrossDeviceDurabilityTests(unittest.TestCase):
             calls.append("fsync_directory")
             return directory_sync or stackcopy.DirectorySync.SYNCED
 
-        def replace(src, dst, **kwargs):
-            # Only the temp -> final rename is interesting; the initial
-            # os.replace attempt is what raises EXDEV below.
+        def rename(src, dst):
+            # Only the temp -> final commit is interesting; the initial
+            # fast-path rename is what raises EXDEV below.
             calls.append("replace")
-            return real_replace(src, dst, **kwargs)
+            return real_rename(src, dst)
 
         def unlink(path, **kwargs):
             # Temp-file cleanup also goes through os.unlink; only the source
@@ -498,23 +513,27 @@ class CrossDeviceDurabilityTests(unittest.TestCase):
             mock.patch.object(
                 stackcopy, "fsync_directory", side_effect=fsync_directory
             ),
-            mock.patch.object(stackcopy.os, "replace", side_effect=replace),
+            mock.patch.object(
+                stackcopy, "atomic_rename_no_replace", side_effect=rename
+            ),
             mock.patch.object(stackcopy.os, "unlink", side_effect=unlink),
         )
 
     def force_cross_device(self, calls):
         """Make the same-filesystem fast path report EXDEV."""
-        real_replace = stackcopy.os.replace
+        real_rename = stackcopy.atomic_rename_no_replace
         state = {"first": True}
 
-        def replace(src, dst, **kwargs):
+        def rename(src, dst):
             if state["first"] and os.fspath(dst) == str(self.dest):
                 state["first"] = False
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
             calls.append("replace")
-            return real_replace(src, dst, **kwargs)
+            return real_rename(src, dst)
 
-        return mock.patch.object(stackcopy.os, "replace", side_effect=replace)
+        return mock.patch.object(
+            stackcopy, "atomic_rename_no_replace", side_effect=rename
+        )
 
     def run_move(self, *, fsync_file_error=None, directory_sync=None):
         calls: list[str] = []
@@ -523,7 +542,7 @@ class CrossDeviceDurabilityTests(unittest.TestCase):
             fsync_file_error=fsync_file_error,
             directory_sync=directory_sync,
         )
-        # The instrumented os.replace is replaced by the EXDEV-raising one.
+        # The instrumented commit is replaced by the EXDEV-raising one.
         patches = patches[:3] + (self.force_cross_device(calls), patches[4])
         output = io.StringIO()
         with ExitStack() as contexts:
@@ -747,8 +766,11 @@ class ExifToolPartialBatchTests(unittest.TestCase):
 
     def test_missing_exiftool_is_silent_and_unknown(self):
         output = io.StringIO()
+        missing = stackcopy.ExifToolInfo(
+            None, None, None, stackcopy.ExifToolSource.NONE
+        )
         with (
-            mock.patch.object(stackcopy.shutil, "which", return_value=None),
+            mock.patch.object(stackcopy, "exiftool_info", return_value=missing),
             redirect_stdout(output),
         ):
             results = stackcopy.read_stacked_image_metadata(["/camera/a.JPG"])
@@ -1158,18 +1180,18 @@ class RecoveryIsDegradedTests(unittest.TestCase):
 class CopiedSourceRemainsTests(unittest.TestCase):
     def cross_device_unlink_failure(self, source: Path):
         """Force EXDEV on the fast path, then refuse to delete the source."""
-        real_replace = stackcopy.os.replace
+        real_rename = stackcopy.atomic_rename_no_replace
         real_unlink = stackcopy.os.unlink
         seen: set[str] = set()
 
-        def replace(src, dst, **kwargs):
+        def rename(src, dst):
             key = os.fspath(dst)
             if key not in seen and not os.path.basename(key).startswith(
                 ".__stackcopy_tmp__"
             ):
                 seen.add(key)
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
-            return real_replace(src, dst, **kwargs)
+            return real_rename(src, dst)
 
         def unlink(path, **kwargs):
             if str(source) in os.fspath(path):
@@ -1177,7 +1199,9 @@ class CopiedSourceRemainsTests(unittest.TestCase):
             return real_unlink(path, **kwargs)
 
         return (
-            mock.patch.object(stackcopy.os, "replace", side_effect=replace),
+            mock.patch.object(
+                stackcopy, "atomic_rename_no_replace", side_effect=rename
+            ),
             mock.patch.object(stackcopy.os, "unlink", side_effect=unlink),
         )
 
@@ -1232,17 +1256,17 @@ class CopiedSourceRemainsTests(unittest.TestCase):
             write_file(source / "P8080002.ORF", b"clean", when)
 
             real_unlink = stackcopy.os.unlink
-            real_replace = stackcopy.os.replace
+            real_rename = stackcopy.atomic_rename_no_replace
             seen: set[str] = set()
 
-            def replace(src, dst, **kwargs):
+            def rename(src, dst):
                 key = os.fspath(dst)
                 if key not in seen and not os.path.basename(key).startswith(
                     ".__stackcopy_tmp__"
                 ):
                     seen.add(key)
                     raise OSError(errno.EXDEV, "Invalid cross-device link")
-                return real_replace(src, dst, **kwargs)
+                return real_rename(src, dst)
 
             def unlink(path, **kwargs):
                 if os.fspath(path).endswith("P8080001.ORF"):
@@ -1255,7 +1279,9 @@ class CopiedSourceRemainsTests(unittest.TestCase):
                 stack_input=stack_input,
                 metadata={},
                 extra_contexts=(
-                    mock.patch.object(stackcopy.os, "replace", side_effect=replace),
+                    mock.patch.object(
+                        stackcopy, "atomic_rename_no_replace", side_effect=rename
+                    ),
                     mock.patch.object(stackcopy.os, "unlink", side_effect=unlink),
                 ),
             )

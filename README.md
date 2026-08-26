@@ -1,6 +1,6 @@
 # stackcopy
 
-Olympus / OM-System in-camera stacking produces many RAW/JPG frames per final JPG. Lightroom doesn't automatically group or separate them, so imports get cluttered. This script separates originals from stacked outputs automatically, so you only need to manually process the photos that actually need your attention.
+Olympus / OM-System in-camera stacking produces many RAW/JPG frames per final JPG. Other importers like Lightroom don't automatically group or separate them, so imports get cluttered. This script separates originals from stacked outputs automatically, so you only need to process the photos that need your attention.
 
 Works on Linux, macOS, WSL, and Windows.
 
@@ -8,17 +8,20 @@ Prefer a window to the command line? There's a point-and-click [graphical interf
 
 ## How it works
 
-In Lightroom modes, Stackcopy first looks for the Olympus/OM System
+Stackcopy first looks for the Olympus/OM System
 `StackedImage` MakerNote. A decoded `Focus-stacked (N images)` value confirms
 the output and tells Stackcopy exactly how many preceding components to select.
 A decoded `No` (or another non-focus mode) rules the JPEG out. When that tag is
 unavailable, Stackcopy retains its conservative JPG/RAW sequence-and-timestamp
-heuristic.
+stack detection.
 
 MakerNote reading uses ExifTool when it is available, in batches rather than one
 process per JPEG. ExifTool is optional: Stackcopy still has no required runtime
 dependency beyond Python's standard library. An old ExifTool that cannot decode
-the camera's MakerNotes is treated as unavailable, never as a negative result.
+the camera's MakerNotes is treated as unavailable rather than a negative result.
+
+**ExifTool 12.41 or newer** is what makes the OM System path work — see
+[ExifTool](#exiftool) below for why, and what you lose without it.
 
 A batch is never discarded wholesale. ExifTool exits nonzero when any single file
 in the batch fails, so Stackcopy parses its JSON regardless of the exit status:
@@ -31,7 +34,7 @@ on a healthy file is not degradation and is never reported.
 
 A stack may legitimately cross from one camera folder into the next
 (`100OMSYS` → `101OMSYS`), and Stackcopy supports that. But the previous folder
-may only *extend* a sequence past the boundary — it may never supply a number
+may only _extend_ a sequence past the boundary — it may never supply a number
 that belongs inside the current folder's own range. If the numbering overlaps or
 has reset, nothing is borrowed across the boundary at all. A frame reached across
 a folder boundary must also carry a plausible capture time; metadata proves the
@@ -59,7 +62,7 @@ Stackcopy creates the same year/day hierarchy Lightroom would make. The raw
 frames that fed in-camera stacks stay in a separate archive so they do not
 clutter the library.
 
-![The Stackcopy GUI showing a scanned card, move or copy mode, and the three planned destinations before import](docs/gui.png)
+![The Stackcopy GUI showing after import](docs/gui.png)
 
 ### Using it
 
@@ -91,6 +94,35 @@ clutter the library.
 Files land in exactly the same place as the `--lightroomimport` command — see
 [Where files go](#where-files-go).
 
+### Update notifications
+
+The GUI asks GitHub once a day whether a newer Stackcopy has been released, in
+the background, a couple of seconds after the window opens. If there is one, a
+quiet line appears under the header — _Stackcopy 1.7.0 is available_ — with
+**View update** for the release notes. **Check for Updates**, beside the version
+number in the header, runs the same check on demand and always tells you the
+answer, including when you are already up to date.
+
+- **Stackcopy never downloads or installs anything.** The update dialog offers
+  **Skip This Version**, **Remind Me Later**, **View Changelog**, and **Open
+  Release** — that last one opens the GitHub release page in your browser, and
+  the URL is verified to belong to this project before it is opened. Updating
+  is still you, downloading the new app.
+- **Build-only releases are ignored on purpose.** Tags like `v1.6.0-build2`
+  re-cut the same application version, usually to fix something about the
+  packaging rather than the program. Stackcopy treats `v1.6.0`, `v1.6.0-build1`
+  and `v1.6.0-build9` as the same version 1.6.0 and stays quiet about them. If a
+  change matters to you, it gets a new version number.
+- **Skipping is per application version.** Skip 1.7.0 and every `1.7.0-buildN`
+  stays skipped too; 1.7.1 notifies normally. **Remind Me Later** just closes
+  the notice, and a later check can raise it again.
+- **You can turn it off.** Set `"update_check_enabled": false` in
+  `gui-state.json` (see [Using it](#using-it) for where that lives) and no
+  automatic check runs. **Check for Updates** still works when you ask for it.
+- The check is unauthenticated, has a short timeout, and sends nothing about
+  you. If it fails — no network, GitHub unreachable — an automatic check fails
+  silently and retries in about an hour rather than interrupting you.
+
 ### Easiest: download the app
 
 Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefeller/stackcopy/releases):
@@ -98,6 +130,10 @@ Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefelle
 - **macOS** — `Stackcopy.dmg`: open it, drag **Stackcopy** to Applications, launch it.
 - **Windows** — `stackcopy-windows.zip`: unzip it, then double-click `Stackcopy.exe`.
   Keep `StackcopyCLI.exe` in the same folder; the GUI uses it for imports.
+  ExifTool 13.59 is bundled, so OM-1 camera stack metadata works out of the box.
+
+macOS users who want OM-1 camera stack metadata should also run
+`brew install exiftool` — see [ExifTool](#exiftool).
 
 Detailed beginner install guides are in [build/INSTALL-macOS.md](build/INSTALL-macOS.md)
 and [build/INSTALL-Windows.md](build/INSTALL-Windows.md).
@@ -152,11 +188,17 @@ build locally on the matching OS:
 
 ```bash
 pip install -r requirements-gui.txt -r requirements-build.txt
+python packaging/fetch_exiftool.py    # Windows only; bundles ExifTool 13.59
 pyinstaller packaging/stackcopy_gui.spec
 # -> dist/Stackcopy.app (macOS)
 # -> dist/Stackcopy/Stackcopy.exe + StackcopyCLI.exe (Windows)
 # -> dist/Stackcopy (Linux)
 ```
+
+`fetch_exiftool.py` downloads a pinned ExifTool release, verifies its SHA-256,
+and fails rather than bundling anything unexpected. It is a no-op off Windows.
+Skipping it still produces a working build — the app just uses ExifTool from
+`PATH` and says so.
 
 PyInstaller can't cross-compile, so build the macOS app on a Mac and the
 Windows app on Windows — or just let the workflow do both.
@@ -347,6 +389,103 @@ RAW capture is disabled. The adjacent-camera-roll exception remains in place
 so a stack can span folders such as `100OMSYS` and `101OMSYS`.
 
 Use `--debug-stacks` with `--dry` to see exactly why each stack is accepted or rejected.
+
+## ExifTool
+
+ExifTool is **optional**. Stackcopy runs fine without it, and nothing is ever
+downloaded at runtime.
+
+| ExifTool             | What Stackcopy does                                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **12.41 or newer**   | Reads the OM SYSTEM `StackedImage` MakerNote — the camera's own word for "this JPG is an N-frame focus stack"                             |
+| **Older than 12.41** | Runs it anyway (Olympus MakerNotes still work), but OM-1 files read as an unrecognized MakerNote block, so the fallback heuristic decides |
+| **Not installed**    | Falls back to the heuristic                                                                                                               |
+
+ExifTool 12.41 (March 2022) is the release that added `OM SYSTEM` MakerNote
+support. Before it, ExifTool only knew the older `OLYMPUS` signature, so an
+OM-1's MakerNote block is unrecognized and the `StackedImage` tag simply never
+appears. That is a hard capability floor, not a preference. Stackcopy 1.6.0 is
+tested against **ExifTool 13.59**, and newer is always fine.
+
+### Why it matters
+
+The fallback heuristic is conservative and works very well — but it works by
+looking at a stacked JPG's **RAW source frames**. When those are not there, it
+has nothing to reason about. A real in-camera focus-stacked JPG can be missed
+when:
+
+- you shoot JPEG-only,
+- the `.ORF` files were already deleted or never copied,
+- or a folder holds the finished stacked JPG but not its matching RAW frames.
+
+A suitable ExifTool reads the answer out of the finished JPG itself, so it does
+not need the RAW companions to prove the JPG is an in-camera stack. That is the
+main reason to install a recent ExifTool.
+
+It also brings some smaller benefits: authoritative confirmation instead of
+filename-and-timestamp inference, the camera-declared frame count, better
+handling of incomplete source-frame sets, recognition of stacks that fall
+outside the heuristic's 3–15-frame and RAW-backing assumptions, and fewer
+ambiguous burst/timing calls.
+
+None of this means Stackcopy is broken without ExifTool. With JPG+ORF pairs
+present, the heuristic is usually right.
+
+### Checking what you have
+
+```bash
+exiftool -ver          # your ExifTool, e.g. 13.59
+./stackcopy.py --version   # Stackcopy 1.6.0
+```
+
+Every Lightroom-mode run also says so itself, on stderr, before it starts
+scanning:
+
+```
+ExifTool 13.59 — OM System stack metadata enabled
+```
+
+or, if there is a problem worth fixing:
+
+```
+ExifTool 12.40 is too old for OM System MakerNotes.
+Using fallback detection; stacks without matching ORF files may be missed.
+Update ExifTool (12.41 or newer, 13.59 recommended).
+```
+
+`--no-stack-detection` runs say nothing about ExifTool, because it is
+irrelevant to them.
+
+### Installing it
+
+- **macOS**: `brew install exiftool`
+- **Linux**: `apt install libimage-exiftool-perl` (or your distro's package).
+  Check the version — some distributions ship a release older than 12.41.
+- **Windows**: download the package from <https://exiftool.org/>, rename
+  `exiftool(-k).exe` to `exiftool.exe`, keep the `exiftool_files` folder beside
+  it, and put both somewhere on your `PATH`.
+
+### Packaged GUI builds
+
+| Build                                 | ExifTool                                                              |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| **Windows** (`stackcopy-windows.zip`) | **Bundled** — ExifTool 13.59 ships inside the app, nothing to install |
+| **macOS** (`Stackcopy.dmg`)           | **Not bundled** — install it yourself (`brew install exiftool`)       |
+| Running from source (CLI or GUI)      | Uses ExifTool from your `PATH`                                        |
+
+The Windows bundle is fetched at build time from a pinned release whose
+SHA-256 is verified; a mismatch fails the build. macOS is deliberately left
+out: ExifTool ships there as a `.pkg` installer or as a Perl distribution that
+would depend on macOS's deprecated system Perl, and a fragile bundle is worse
+than a one-line `brew install`.
+
+Either way the GUI shows what it found in its header, and offers a link to
+<https://exiftool.org/> when something is missing or too old. It never
+downloads or installs anything by itself.
+
+Set `STACKCOPY_EXIFTOOL=/path/to/exiftool` to point Stackcopy at a specific
+build; a packaged app otherwise prefers the one it shipped with, and everything
+else uses `PATH`.
 
 ## Safety and recovery
 

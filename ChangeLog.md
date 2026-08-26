@@ -1,29 +1,37 @@
 # Change Log
 
-## **Unreleased**
+## **1.6.0**
 
 ### Added
 
+- The GUI now tells you when a genuinely newer Stackcopy has been released. A background check runs a couple of seconds after the window opens — never blocking startup, never on the UI thread — and, if there is something newer, shows an unobtrusive line under the header rather than a dialog. **Check for Updates** sits beside the version number for an on-demand check, which ignores every cooldown and always reports its answer, including "up to date". The detailed dialog offers **Skip This Version**, **Remind Me Later**, **View Changelog**, and **Open Release**.
+- **Stackcopy never downloads, replaces, installs, or restarts anything.** The update system is a notifier: the only action it takes is opening a release page in your browser, and only after the URL has been proven to be an HTTPS `github.com/AlanRockefeller/stackcopy` release page. A URL from the API that is anything else is discarded in favour of this project's own releases page.
+- **Build-only releases deliberately do not notify.** `v1.6.0`, `v1.6.0-build1` and `v1.6.0-build99` are all application version 1.6.0, so somebody running 1.6.0 is never told to update to a re-cut of what they already have. A newer application version notifies even when its tag carries a build suffix: installed 1.5.9 against `v1.5.10-build2` reports that 1.5.10 is available. Skipping a version skips its build re-cuts with it; the next real version notifies normally.
+- After a successful check Stackcopy stays quiet for 24 hours; after a failed one it retries in about an hour, because being offline at launch should not cost a full day. A failed automatic check never shows an error dialog. "Asked GitHub" and "heard back from GitHub" are recorded separately, so a run of failures cannot masquerade as a successful check.
+- Update checking is a new, independently testable `stackcopy_updater.py` — standard library only, no Tk import, so tag normalization, version comparison, cooldowns, URL validation, and every GitHub failure mode are tested without a display and without a network. Checks are unauthenticated and use a descriptive User-Agent and a short timeout.
+- Tagged releases now get real release notes, generated from the matching `ChangeLog.md` section by `packaging/release_notes.py`. The changelog stays the single hand-written source; no release prose is maintained twice. A build-only tag gets the notes for its application version, labelled as a rebuild so it cannot be read as a new version.
+- A release tag that disagrees with `STACKCOPY_VERSION` or has no `ChangeLog.md` section now fails the build before anything is compiled, rather than producing apps that report a version nobody wrote notes for. Tag `v1.5.10` against source `1.5.9` fails; tag `v1.5.9-build2` against source `1.5.9` with a `1.5.9` changelog entry passes, because it is the same application version.
+- Stackcopy now identifies itself without being asked. Human runs print `Stackcopy 1.6.0` to stderr at startup (stdout stays clean for pipes and stays exactly one JSON object under `--plan-json`), `--help` carries the version, and the GUI shows it in the window title and header. `--version` is unchanged. The GUI imports `STACKCOPY_VERSION` from `stackcopy.py` rather than repeating it, so the CLI, GUI, packaged app metadata, and release tag cannot drift apart.
+- The packaged app's bundle version is now read from `STACKCOPY_VERSION` in `stackcopy.py` rather than from the build environment. A release tag passed through `STACKCOPY_VERSION` is treated as a cross-check: a tag that disagrees with the source fails the build instead of stamping a different number into the bundle.
+- ExifTool discovery, version, and capability are now one shared implementation used by the core, the CLI, and the GUI. `exiftool -ver` is executed once per process and cached; `STACKCOPY_EXIFTOOL` overrides which executable is used.
+- Lightroom-mode runs now say what ExifTool can do for them before scanning starts: `ExifTool 13.59 — OM System stack metadata enabled`, or a warning naming the detected version when it is older than 12.41, or a note that ExifTool was not found. `--no-stack-detection` runs say nothing, because ExifTool is irrelevant to them.
+- `--plan-json` now reports `stackcopy_version`, `exiftool_status` (`om_system_supported`, `too_old`, `unusable`, `missing`), `exiftool_version`, `exiftool_source`, `exiftool_supports_om_system`, and the minimum/recommended versions, so the GUI never has to parse human sentences out of stderr.
+- The GUI header shows the ExifTool state as an unobtrusive line — amber, with a link to <https://exiftool.org/>, when something is missing or too old. Clicking the link opens the download page; the GUI never downloads or installs anything itself.
+- Packaged Windows GUI builds now bundle ExifTool 13.59 (`exiftool.exe` plus its `exiftool_files` support directory), so ordinary GUI users get OM-1 camera stack metadata without installing a hidden dependency. It is fetched at build time from a pinned release with a pinned SHA-256 by `packaging/fetch_exiftool.py`; a checksum mismatch fails the build. A packaged app prefers its bundled ExifTool; source and CLI installs use `PATH`. macOS builds deliberately bundle nothing (ExifTool ships there as a `.pkg` or as a Perl distribution depending on the deprecated system Perl) and the app says how to install it instead.
 - Added `--plan-json` for `--lightroomimport`: it runs the real scanner and planner without changing files, then emits one JSON object containing counts, bytes, dated destinations, scanned source subfolders, and best-effort removable/empty-card information.
 - Progress sentinels now identify `stack_output`, `stack_input`, and `other` roles and carry the associated finished stack name, allowing front-ends to explain the current file and maintain separate counters.
-
-### Changed
-
-- Rebuilt the customtkinter GUI around a pre-run import plan. The idle window now explains in-camera stacking, presents the source as a scanned card, makes move-versus-copy an explicit mode, and shows where finished stacks, source frames, and ordinary media will land.
-- Replaced the dry-run and leave-on-card checkboxes with a dedicated non-destructive preview button and a segmented move/copy control. Verbose and stack-detection options now live under a persisted Advanced disclosure.
-- Replaced the always-visible empty log with role-aware running progress, ETA/throughput metadata, four counter cards, safe-stop guidance, and a collapsed copyable detailed log. Success, nothing-found, degraded, cancelled, low-space, and launch-failure outcomes now share one result area.
-- Updated the GUI documentation and screenshot to match the plan-first workflow.
-
-## **1.6.0 - 2026-08-24**
-
-### Added
-
 - Uses optional, batched ExifTool reads of Olympus/OM `StackedImage` metadata to confirm focus stacks and their exact frame counts.
 - Falls back to the existing safe heuristic when metadata is missing, unsupported, malformed, or unreadable.
 - Preserves `.ORI` companions separately from `.ORF` files and reports other unrecognized files left on the source.
 
 ### Fixed
 
+- **Closed the destination check-to-commit race.** Stackcopy classifies a destination (absent, identical, zero-byte, conflicting) and commits to it a moment later; anything could change it in between, and `os.replace()` would then destroy whatever had appeared. Every destructive step is now fail-closed rather than merely re-checked — re-stat'ing before the rename only narrows the window, because the stat and the rename are still two syscalls.
+  - Destinations are committed with an atomic no-clobber rename: `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS, and `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` on Windows. Where the kernel or filesystem has no rename flags (older kernels, WSL's `/mnt/` bridge, several FUSE mounts) it falls back to a `link()`-based commit, which POSIX requires to fail with `EEXIST` rather than replace; on FAT/exFAT, which has neither, it reserves the name with `O_CREAT|O_EXCL` before allowing a rename onto it. There is deliberately no clobbering last resort: if none of these work the commit fails and the source is left alone.
+  - A destination Stackcopy means to replace — the zero-byte repair case, and a `--force` overwrite — is now atomically quarantined under a unique name and _identified_ before anything irreversible happens. If it is not the exact file that was classified (same device, inode, size, and mtime), it is put back and the operation is refused. A quarantined file is never deleted until the replacement has landed, and if the destination name is claimed again before it can be restored, the file is kept under its guard name and reported rather than destroyed.
+  - A move onto an identical destination still deletes the redundant source, so a repeated card import still empties the card — but it now _pins_ the destination first with a second hard link to that exact inode, under a name nothing else can reach. The source is removed only while the pinned inode is still the file that was compared. If the destination is swapped anyway, the verified photo survives on the pin, the run says where it is, and it is never reported as a completed move. Where the destination cannot be pinned at all, the source is kept and the outcome is reported as degraded.
+  - On Windows this also fixes a durability gap: `os.replace()` maps to `MoveFileExW` with `MOVEFILE_COPY_ALLOWED`, so a cross-volume move was silently performed as an unflushed copy+delete. Cross-volume moves now report `EXDEV` and go through the same durable `fsync`-before-delete path as every other platform.
+  - No existing safety behavior changed: `--force` still overwrites a pre-existing differing file and is still tallied exactly once, it still cannot touch a destination reserved by the same run, genuine collisions still get `__2`/`__3` suffixes with companions sharing one suffix, identical re-imports stay idempotent, identical copies stay no-ops, zero-byte repair still works when the file has not changed, collision-name exhaustion still fails closed, cross-device moves stay durable, `COPIED_SOURCE_REMAINS` stays a distinct outcome, and recovery paths use the same rules. An interrupted replacement puts the destination it borrowed back, and an ordinary successful operation leaves no temp, guard, or pin file behind.
 - Prevented `--force` from overwriting another source file planned by the same run, including case-only destination collisions on Windows-mounted WSL filesystems.
 - Treats identical destinations as no-ops even with `--force`, so low-space planning matches execution; moves delete only the redundant source and copies skip the write.
 - Made dry runs match real behavior for identical re-imports and zero-byte destination repair.
@@ -55,8 +63,16 @@
 
 ### Changed
 
+- `gui-state.json` now stores booleans as JSON booleans instead of the strings `"true"`/`"false"`, and carries the update checker's own state alongside the folders you chose. Files written by earlier versions load unchanged — every reader still accepts the old string spelling — and the GUI now writes the settings file back whole, so no screen can drop a key it does not own. A damaged settings file, including damaged updater fields, is treated as no settings rather than as a reason the window fails to open.
+- An ExifTool older than 12.41 is no longer silently treated as absent. It is still run — Olympus MakerNotes work fine below 12.41, and only the newer `OM SYSTEM` signature is beyond it — and what changes is what the user is told. The warning names the detected version, explains that stacks whose `.ORF` files are not alongside them may be missed, and recommends updating. It never claims stack detection is disabled.
+- Rebuilt the customtkinter GUI around a pre-run import plan. The idle window now explains in-camera stacking, presents the source as a scanned card, makes move-versus-copy an explicit mode, and shows where finished stacks, source frames, and ordinary media will land.
+- Replaced the dry-run and leave-on-card checkboxes with a dedicated non-destructive preview button and a segmented move/copy control. Verbose and stack-detection options now live under a persisted Advanced disclosure.
+- Replaced the always-visible empty log with role-aware running progress, ETA/throughput metadata, four counter cards, safe-stop guidance, and a collapsed copyable detailed log. Success, nothing-found, degraded, cancelled, low-space, and launch-failure outcomes now share one result area.
+- Updated the GUI documentation and screenshot to match the plan-first workflow.
 - Metadata-confirmed stacks may exceed the heuristic 15-frame limit and remain confirmed when some inputs are missing.
 - Updated `--prefix` help and Lightroom documentation.
+
+### Changed
 
 ## **1.5.9 - 2026-08-24**
 

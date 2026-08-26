@@ -120,3 +120,23 @@ Downloads. Click **Allow** when asked. If you clicked **Don't Allow**, open
 **System Settings** > **Privacy & Security** > **Files and Folders** and allow
 Stackcopy to access the folders you want to use.
 
+### Stackcopy says a stack was missed
+
+The macOS app does not bundle ExifTool, so Stackcopy uses whatever is installed
+on your Mac. Without it, Stackcopy falls back to comparing filenames and
+timestamps: that works well when a stacked JPG still has its `.ORF` frames
+beside it, but it can miss a stacked JPG whose RAW frames were deleted or never
+copied.
+
+To install ExifTool, open **Terminal** and run:
+
+    brew install exiftool
+
+(If you do not have Homebrew, follow the installer at <https://brew.sh/> first,
+or download ExifTool directly from <https://exiftool.org/>.)
+
+Stackcopy needs **ExifTool 12.41 or newer** — that is the release that learned
+to read OM SYSTEM camera metadata. Restart Stackcopy afterwards; the line near
+the top of the window should then say:
+
+    ExifTool 13.59 — OM-1 stack metadata enabled

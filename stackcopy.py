@@ -1181,22 +1181,391 @@ def _note_directory_fsync_unsupported(path: str, error: OSError) -> DirectorySyn
     return DirectorySync.UNSUPPORTED
 
 
+# ---------------------------------------------------------------------------
+# Atomic no-clobber destination commits
+# ---------------------------------------------------------------------------
+# Stackcopy classifies a destination (absent / identical / zero-byte /
+# conflict) and only later commits to it.  Anything may happen in between:
+# another importer, a sync client, a card reader daemon, or a second Stackcopy.
+# Re-stat'ing just before the commit narrows that window but never closes it,
+# because the stat and the rename are two separate syscalls.
+#
+# The commit itself therefore has to be no-clobber, so that "the destination
+# appeared after we looked" is decided by the kernel rather than by a race:
+#
+#   NATIVE_RENAME     renameat2(RENAME_NOREPLACE) on Linux, renamex_np(
+#                     RENAME_EXCL) on macOS, MoveFileExW without
+#                     MOVEFILE_REPLACE_EXISTING on Windows.  One syscall, no
+#                     intermediate state, EEXIST decided atomically.
+#   HARD_LINK         link() is required by POSIX to fail with EEXIST rather
+#                     than replace, so it commits the destination atomically.
+#                     The source name is removed afterward; if that fails,
+#                     both names are retained. Used where the kernel or
+#                     filesystem has no rename-flag support (older kernels,
+#                     WSL's /mnt bridge, several FUSE mounts).
+#
+# There is deliberately no fallback based on an O_EXCL reservation.  Once the
+# reservation descriptor is closed, another process can replace that public
+# name before a following rename, and os.replace() would then destroy its file.
+# If neither primitive above works, the commit fails closed and the source is
+# left alone.
+
+
+class NoReplaceUnsupported(OSError):
+    """This filesystem cannot perform *this* no-clobber mechanism.
+
+    Internal signalling only - it means "try the next mechanism", never "give
+    up and overwrite".  It is not raised out of atomic_rename_no_replace().
+    """
+
+
+class HardLinkSourceRemovalError(OSError):
+    """The destination link landed, but the source link could not be removed."""
+
+
+class NoReplaceMechanism(Enum):
+    """Which atomic no-clobber primitive committed a destination."""
+
+    NATIVE_RENAME = "native_rename"
+    HARD_LINK = "hard_link"
+
+
+_TEMP_PREFIX = ".__stackcopy_tmp__"
+_GUARD_PREFIX = ".__stackcopy_guard__"
+_PIN_PREFIX = ".__stackcopy_pin__"
+
+# "The kernel or filesystem does not implement this", as opposed to "the
+# operation was refused".  Only these fall through to the next mechanism; a
+# genuine EACCES/EROFS/ENOSPC must surface as the failure it is.
+_MECHANISM_UNSUPPORTED_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EPERM", "EMLINK")
+    if hasattr(errno, name)
+)
+
+# Linux renameat2()
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+# macOS renamex_np()
+_RENAME_EXCL = 0x00000004
+# Windows error codes that MoveFileExW reports for the cases we care about.
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_PATH_NOT_FOUND = 3
+_ERROR_NOT_SAME_DEVICE = 17
+_ERROR_FILE_EXISTS = 80
+_ERROR_ALREADY_EXISTS = 183
+
+# System call numbers for renameat2 on the Linux ports Stackcopy is likely to
+# meet, used only when libc is too old to export a renameat2() wrapper.
+# Anything not listed simply falls through to the hard-link mechanism.
+_LINUX_RENAMEAT2_SYSCALL_NUMBERS = {
+    "x86_64": 316,
+    "i386": 353,
+    "i486": 353,
+    "i586": 353,
+    "i686": 353,
+    "aarch64": 276,
+    "aarch64_be": 276,
+    "armv6l": 382,
+    "armv7l": 382,
+    "armv8l": 382,
+    "ppc64": 357,
+    "ppc64le": 357,
+    "s390x": 347,
+    "riscv64": 276,
+    "loongarch64": 276,
+}
+
+# Resolved once per process: a callable(src, dest) -> None, or None when this
+# platform has no native no-replace rename at all.
+_native_rename_no_replace_impl: Any = "unresolved"
+
+
+def _sidecar_path(dest_path: str, prefix: str) -> str:
+    """A unique name beside dest_path, used for temp/guard/pin files.
+
+    Uniqueness is what makes the guard and pin safe: a name nothing else can
+    hold cannot be clobbered by, or clobber, anybody.
+    """
+    dest_dir = os.path.dirname(dest_path) or "."
+    return os.path.join(
+        dest_dir, f"{prefix}{os.path.basename(dest_path)}.{uuid.uuid4().hex}"
+    )
+
+
+def _windows_native_rename_no_replace():
+    """MoveFileExW with no flags: no replace, no cross-volume copy."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file = kernel32.MoveFileExW
+    move_file.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+    move_file.restype = wintypes.BOOL
+
+    def rename(src_path: str, dest_path: str) -> None:
+        # dwFlags = 0 deliberately.  MOVEFILE_REPLACE_EXISTING is the clobber
+        # this module exists to avoid, and MOVEFILE_COPY_ALLOWED would turn a
+        # cross-volume move into an unflushed copy+delete behind Stackcopy's
+        # back instead of reporting EXDEV so the durable path can run.
+        ctypes.set_last_error(0)
+        if move_file(src_path, dest_path, 0):
+            return
+        code = ctypes.get_last_error()
+        raise _windows_error_to_oserror(code, src_path, dest_path) or ctypes.WinError(
+            code
+        )
+
+    return rename
+
+
+def _windows_error_to_oserror(
+    code: int, src_path: str, dest_path: str
+) -> OSError | None:
+    """Map the MoveFileExW failures Stackcopy has to distinguish.
+
+    Returns None for anything else, so the caller can fall back to ctypes'
+    own rendering of the Windows error.
+    """
+    if code in (_ERROR_ALREADY_EXISTS, _ERROR_FILE_EXISTS):
+        return FileExistsError(errno.EEXIST, "destination already exists", dest_path)
+    if code == _ERROR_NOT_SAME_DEVICE:
+        return OSError(errno.EXDEV, "Invalid cross-device link", src_path)
+    if code in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
+        return FileNotFoundError(errno.ENOENT, "no such file", src_path)
+    return None
+
+
+def _linux_native_rename_no_replace():
+    """renameat2(AT_FDCWD, src, AT_FDCWD, dest, RENAME_NOREPLACE)."""
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    call = getattr(libc, "renameat2", None)
+    if call is not None:
+        call.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        call.restype = ctypes.c_int
+
+        def invoke(src: bytes, dest: bytes) -> int:
+            return call(_AT_FDCWD, src, _AT_FDCWD, dest, _RENAME_NOREPLACE)
+
+    else:
+        number = _LINUX_RENAMEAT2_SYSCALL_NUMBERS.get(platform.machine())
+        if number is None:
+            return None
+        syscall = libc.syscall
+        syscall.restype = ctypes.c_long
+
+        def invoke(src: bytes, dest: bytes) -> int:
+            return syscall(
+                ctypes.c_long(number),
+                ctypes.c_int(_AT_FDCWD),
+                ctypes.c_char_p(src),
+                ctypes.c_int(_AT_FDCWD),
+                ctypes.c_char_p(dest),
+                ctypes.c_uint(_RENAME_NOREPLACE),
+            )
+
+    def rename(src_path: str, dest_path: str) -> None:
+        ctypes.set_errno(0)
+        if invoke(os.fsencode(src_path), os.fsencode(dest_path)) == 0:
+            return
+        raise _errno_to_oserror(ctypes.get_errno(), src_path, dest_path)
+
+    return rename
+
+
+def _macos_native_rename_no_replace():
+    """renamex_np(src, dest, RENAME_EXCL), available since macOS 10.12."""
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    call = getattr(libc, "renamex_np", None)
+    if call is None:
+        return None
+    call.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    call.restype = ctypes.c_int
+
+    def rename(src_path: str, dest_path: str) -> None:
+        ctypes.set_errno(0)
+        result = call(
+            os.fsencode(src_path), os.fsencode(dest_path), ctypes.c_uint(_RENAME_EXCL)
+        )
+        if result == 0:
+            return
+        raise _errno_to_oserror(ctypes.get_errno(), src_path, dest_path)
+
+    return rename
+
+
+def _errno_to_oserror(code: int, src_path: str, dest_path: str) -> OSError:
+    """Turn a raw libc errno into the exception the callers expect."""
+    if code == errno.EEXIST:
+        return FileExistsError(code, "destination already exists", dest_path)
+    if code == errno.ENOENT:
+        return FileNotFoundError(code, "no such file or directory", src_path)
+    if code in _MECHANISM_UNSUPPORTED_ERRNOS:
+        return NoReplaceUnsupported(code, os.strerror(code) if code else "unsupported")
+    return OSError(code, os.strerror(code) if code else "rename failed", src_path)
+
+
+def native_rename_no_replace_available() -> bool:
+    """True when this platform exports a no-replace rename at all.
+
+    Resolved once per process; a platform without one is not an error, it just
+    means the hard-link mechanism carries the commits where the filesystem
+    supports it.
+    """
+    global _native_rename_no_replace_impl
+    if _native_rename_no_replace_impl == "unresolved":
+        try:
+            if IS_WINDOWS:
+                _native_rename_no_replace_impl = _windows_native_rename_no_replace()
+            elif IS_MACOS:
+                _native_rename_no_replace_impl = _macos_native_rename_no_replace()
+            elif sys.platform.startswith("linux"):
+                _native_rename_no_replace_impl = _linux_native_rename_no_replace()
+            else:
+                _native_rename_no_replace_impl = None
+        except (OSError, AttributeError, ImportError, ValueError):
+            _native_rename_no_replace_impl = None
+    return _native_rename_no_replace_impl is not None
+
+
+def _native_rename_no_replace(src_path: str, dest_path: str) -> NoReplaceMechanism:
+    if not native_rename_no_replace_available():
+        raise NoReplaceUnsupported(
+            errno.ENOSYS, "no native no-replace rename on this platform"
+        )
+    _native_rename_no_replace_impl(src_path, dest_path)
+    return NoReplaceMechanism.NATIVE_RENAME
+
+
+def _hard_link_rename_no_replace(src_path: str, dest_path: str) -> NoReplaceMechanism:
+    """link() then unlink(): POSIX guarantees link() fails on EEXIST."""
+    try:
+        os.link(src_path, dest_path)
+    except FileExistsError:
+        raise
+    except FileNotFoundError:
+        raise
+    except OSError as link_error:
+        if link_error.errno == errno.EXDEV:
+            raise
+        if link_error.errno in _MECHANISM_UNSUPPORTED_ERRNOS:
+            raise NoReplaceUnsupported(
+                link_error.errno, f"hard links unavailable here: {link_error}"
+            ) from link_error
+        raise
+    try:
+        os.unlink(src_path)
+    except OSError as unlink_error:
+        # Never roll back through the public destination name.  Another
+        # process can replace that name between link() and cleanup, in which
+        # case unlink(dest_path) would delete an unrelated file.  Retaining
+        # both links is safe and lets the caller report the degraded move.
+        raise HardLinkSourceRemovalError(
+            unlink_error.errno,
+            f"source '{src_path}' could not be removed after destination link "
+            f"'{dest_path}' was created; Stackcopy did not unlink the "
+            f"destination: {unlink_error}",
+            src_path,
+        ) from unlink_error
+    return NoReplaceMechanism.HARD_LINK
+
+
+def atomic_rename_no_replace(src_path: str, dest_path: str) -> NoReplaceMechanism:
+    """Rename src_path onto dest_path, never replacing an existing dest_path.
+
+    On success src_path no longer exists and dest_path holds it.  Raises
+    FileExistsError when the destination is already taken - decided by the
+    kernel, not by a preceding stat - OSError(EXDEV) for a cross-filesystem
+    rename, and OSError for anything else.  It never overwrites.
+    """
+    for mechanism in (
+        _native_rename_no_replace,
+        _hard_link_rename_no_replace,
+    ):
+        try:
+            return mechanism(src_path, dest_path)
+        except NoReplaceUnsupported:
+            continue
+    raise OSError(
+        errno.ENOSYS,
+        "no atomic no-clobber rename is available on this filesystem",
+        dest_path,
+    )
+
+
+def quarantine_destination(dest_path: str) -> str | None:
+    """Atomically move whatever is at dest_path aside to a unique guard name.
+
+    Returns the guard path, or None when the destination had already vanished.
+    Nothing is destroyed: this only frees the name, so the caller can verify
+    that what it captured really is the file it planned to replace before
+    anything irreversible happens.
+    """
+    guard_path = _sidecar_path(dest_path, _GUARD_PREFIX)
+    try:
+        atomic_rename_no_replace(dest_path, guard_path)
+    except FileNotFoundError:
+        return None
+    return guard_path
+
+
+def restore_quarantined_destination(guard_path: str, dest_path: str) -> bool:
+    """Put a quarantined destination back, reporting whether it got home."""
+    try:
+        atomic_rename_no_replace(guard_path, dest_path)
+    except OSError:
+        return False
+    return True
+
+
+def release_quarantined_destination(
+    guard_path: str, dest_path: str, operation_name: str
+) -> None:
+    """Undo a quarantine after the replacement did not happen.
+
+    If the destination name has been taken in the meantime the guarded file
+    cannot go home, so it is kept under its guard name and reported.  Deleting
+    it here is never an option: it is the user's file.
+    """
+    if restore_quarantined_destination(guard_path, dest_path):
+        return
+    print(
+        f"Warning: {operation_name} left the previous '{display_path(dest_path)}' "
+        f"at '{display_path(guard_path)}' because the destination name was "
+        "taken again before it could be restored. That file was not deleted."
+    )
+
+
 def _atomic_copy2(src_path: str, dest_path: str, durable: bool = False) -> bool:
-    """Copy to a temp file in dest dir, then atomically replace dest_path.
+    """Copy to a temp file in dest dir, then atomically commit it to dest_path.
+
+    The commit is no-clobber (see atomic_rename_no_replace): if the
+    destination has appeared since it was classified, FileExistsError is
+    raised and nothing is overwritten.  Callers that intend to replace an
+    existing destination must quarantine it first, so that by the time this
+    runs the destination name really is expected to be free.
 
     With ``durable=True`` the copied bytes are flushed to stable storage
-    *before* the rename, and the renamed directory entry is flushed after it.
-    Returns True when it is safe to delete the source: either the directory
-    entry was flushed, or this platform/filesystem has no way to flush one and
-    the (already durable) file contents are the best guarantee available.
-    Callers about to delete the source must pass ``durable=True``; a plain copy
-    leaves the source in place and does not need the cost.
+    *before* the commit, and the resulting directory entry is flushed after
+    it.  Returns True when it is safe to delete the source: either the
+    directory entry was flushed, or this platform/filesystem has no way to
+    flush one and the (already durable) file contents are the best guarantee
+    available.  Callers about to delete the source must pass ``durable=True``;
+    a plain copy leaves the source in place and does not need the cost.
     """
     dest_dir = os.path.dirname(dest_path)
     os.makedirs(dest_dir, exist_ok=True)
-    tmp_path = os.path.join(
-        dest_dir, f".__stackcopy_tmp__{os.path.basename(dest_path)}.{uuid.uuid4().hex}"
-    )
+    tmp_path = _sidecar_path(dest_path, _TEMP_PREFIX)
     try:
         shutil.copyfile(src_path, tmp_path)
         # Order matters: the writable descriptor used for the durability flush
@@ -1229,10 +1598,12 @@ def _atomic_copy2(src_path: str, dest_path: str, durable: bool = False) -> bool:
         finally:
             if temp_fd is not None:
                 os.close(temp_fd)
-        # Atomic replace: dest_path is either old or new, never partial
-        os.replace(tmp_path, dest_path)
+        # Atomic no-clobber commit: dest_path ends up either untouched (because
+        # somebody else got there first) or holding the complete copy, never
+        # partial and never somebody else's file.
+        atomic_rename_no_replace(tmp_path, dest_path)
     finally:
-        # Clean up temp if something went wrong before replace
+        # Clean up temp if something went wrong before the commit
         try:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -1254,6 +1625,126 @@ forced_overwrite_paths: list[str] = []
 source_remains_paths: list[str] = []
 
 
+def _destination_still_holds(
+    dest_path: str, pinned: FileFingerprint | None
+) -> bool:
+    """True when dest_path still names exactly the pinned file."""
+    if pinned is None:
+        return False
+    current = _file_fingerprint(dest_path)
+    if current is None or not inode_identity_is_meaningful(current, pinned):
+        return False
+    return current.device == pinned.device and current.inode == pinned.inode
+
+
+def _delete_redundant_source(
+    src_path: str, dest_path: str, expected: FileFingerprint | None
+) -> tuple[OperationResult, int]:
+    """Finish a move whose destination already holds an identical copy.
+
+    Emptying the card on a repeated import is the useful part of this case, but
+    the "is it identical?" check and the deletion are separate steps: if the
+    destination were replaced in between, the unlink would destroy the only
+    remaining copy of the photo.
+
+    So the destination is *pinned* first - a second hard link to that exact
+    inode, under a unique name nothing else can reach.  A pin cannot be taken
+    away by anyone renaming, replacing or deleting the destination, so the
+    verified bytes stay reachable whatever happens next.  The source is removed
+    only while the pinned inode is still the file that was compared, and if the
+    destination is swapped anyway the pin - not the card - is what keeps the
+    photo, and the run says so instead of reporting a clean move.
+    """
+    destination_now = _file_fingerprint(dest_path)
+    if (
+        expected is None
+        or destination_now is None
+        or not inode_identity_is_meaningful(destination_now, expected)
+    ):
+        # Without trustworthy inode identity there is no way to prove the
+        # destination stays put, so the card keeps the only provable copy.
+        print(
+            f"Note: destination '{dest_path}' already exists with identical "
+            "content, but this filesystem cannot prove it stays put while the "
+            f"source is removed; kept '{src_path}'."
+        )
+        source_remains_paths.append(src_path)
+        return OperationResult(OperationOutcome.COPIED_SOURCE_REMAINS), 0
+
+    pin_path = _sidecar_path(dest_path, _PIN_PREFIX)
+    try:
+        os.link(dest_path, pin_path)
+    except OSError as pin_error:
+        print(
+            f"Note: destination '{dest_path}' already exists with identical "
+            "content, but this filesystem cannot hold it still while the "
+            f"source is removed ({pin_error}); kept '{src_path}'."
+        )
+        source_remains_paths.append(src_path)
+        return OperationResult(OperationOutcome.COPIED_SOURCE_REMAINS), 0
+
+    pinned = _file_fingerprint(pin_path)
+    keep_pin = False
+    try:
+        # Equality with the fingerprint the identical-content comparison was
+        # made against is what makes the pin meaningful: same device, same
+        # inode, same size, same mtime means this is that very file in that
+        # very state, so it does not have to be read again.
+        if pinned != expected or not _destination_still_holds(dest_path, pinned):
+            print(
+                f"Warning: '{dest_path}' changed after Stackcopy compared it, "
+                f"so the source '{src_path}' was kept rather than deleted."
+            )
+            return OperationResult(OperationOutcome.FAILED), 0
+
+        try:
+            os.unlink(src_path)
+        except OSError as delete_error:
+            # The destination already holds this photo, so this is not a
+            # failure to retry or recover - it is a move that stopped one
+            # step short, and the card still holds the original.
+            print(
+                f"Note: destination '{dest_path}' already exists with identical content; "
+                f"source '{src_path}' could not be deleted: {delete_error}"
+            )
+            source_remains_paths.append(src_path)
+            return OperationResult(OperationOutcome.COPIED_SOURCE_REMAINS), 0
+
+        if _destination_still_holds(dest_path, pinned):
+            print(
+                f"Note: destination '{dest_path}' already exists with identical content; "
+                f"deleted source '{src_path}'."
+            )
+            return OperationResult(OperationOutcome.SUCCESS), 0
+
+        # The destination was swapped in the instant after it was verified.
+        # Nothing was lost - the pin still holds the photo - but this is not a
+        # move that finished, so it is never reported as one.
+        keep_pin = True
+        print(
+            f"Warning: '{dest_path}' was replaced immediately after Stackcopy "
+            f"verified it and removed '{src_path}'. The verified photo was not "
+            f"lost: it is kept at '{display_path(pin_path)}'."
+        )
+        return OperationResult(OperationOutcome.FAILED), 0
+    finally:
+        if not keep_pin:
+            try:
+                os.unlink(pin_path)
+            except OSError:
+                pass
+
+
+def _report_destination_taken(
+    operation_name: str, src_path: str, dest_path: str
+) -> None:
+    print(
+        f"Warning: '{display_path(dest_path)}' appeared while Stackcopy was "
+        f"{operation_name} '{display_path(src_path)}'. That file was left "
+        "untouched and the source was kept; re-run to file this photo."
+    )
+
+
 def safe_file_operation(
     operation,
     src_path,
@@ -1271,6 +1762,12 @@ def safe_file_operation(
     only ask "did this land?" need no changes; callers that must distinguish a
     finished move from a copy whose source could not be removed read
     ``result.outcome``.
+
+    Every destructive step is fail-closed rather than merely re-checked:
+    destinations are committed with an atomic no-clobber rename, a destination
+    Stackcopy means to replace is quarantined and identified before anything
+    irreversible happens, and a redundant source is deleted only while a pinned
+    destination provably still holds its content.
     """
     succeeded = OperationResult(OperationOutcome.SUCCESS)
 
@@ -1310,23 +1807,9 @@ def safe_file_operation(
             return succeeded, 0
 
         if operation == "move":
-            try:
-                os.unlink(src_path)
-            except OSError as delete_error:
-                # The destination already holds this photo, so this is not a
-                # failure to retry or recover — it is a move that stopped one
-                # step short, and the card still holds the original.
-                print(
-                    f"Note: destination '{dest_path}' already exists with identical content; "
-                    f"source '{src_path}' could not be deleted: {delete_error}"
-                )
-                source_remains_paths.append(src_path)
-                return OperationResult(OperationOutcome.COPIED_SOURCE_REMAINS), 0
-            print(
-                f"Note: destination '{dest_path}' already exists with identical content; "
-                f"deleted source '{src_path}'."
+            return _delete_redundant_source(
+                src_path, dest_path, check.destination_fingerprint
             )
-            return succeeded, 0
 
         print(
             f"Note: destination '{dest_path}' already exists with identical content; "
@@ -1335,10 +1818,15 @@ def safe_file_operation(
         return succeeded, 0
 
     forced_overwrite = False
-    if check.state == DestinationState.ZERO_BYTE_RECOVERABLE and not force:
-        msg = "replacing from source" if not dry_run else "would replace from source"
-        print(f"Note: destination '{dest_path}' exists but is 0 bytes; {msg}.")
-        force = True
+    # The exact destination Stackcopy intends to replace, or None when it
+    # expects to commit onto a free name.  Replacing anything else - a file
+    # that appeared or changed since classification - is never allowed.
+    replaced_fingerprint: FileFingerprint | None = None
+    if check.state == DestinationState.ZERO_BYTE_RECOVERABLE:
+        if not force:
+            msg = "replacing from source" if not dry_run else "would replace from source"
+            print(f"Note: destination '{dest_path}' exists but is 0 bytes; {msg}.")
+        replaced_fingerprint = check.destination_fingerprint
     elif check.state == DestinationState.CONFLICT:
         if not force:
             if dry_run:
@@ -1354,6 +1842,7 @@ def safe_file_operation(
         # thing Stackcopy does.  Always say so, with or without --verbose, and
         # tally it here so no mode can forget to report it.
         forced_overwrite = True
+        replaced_fingerprint = check.destination_fingerprint
         verb = "Would overwrite" if dry_run else "Overwriting"
         print(f"{verb} differing existing file because --force:")
         print(f"  {dest_path}")
@@ -1374,13 +1863,84 @@ def safe_file_operation(
     if dry_run:
         return placed(), 0
 
+    guard_path: str | None = None
+    if replaced_fingerprint is not None:
+        # Free the destination name by moving the existing file aside rather
+        # than by overwriting it.  Quarantining destroys nothing, so the
+        # captured file can still be identified - and put back - before any
+        # irreversible step.  This is what turns "stat again and hope" into a
+        # decision the kernel makes.
+        try:
+            guard_path = quarantine_destination(dest_path)
+        except OSError as guard_error:
+            print(
+                f"Error {operation_name} '{src_path}' to '{dest_path}': the "
+                f"existing destination could not be set aside safely "
+                f"({guard_error}). The source was left untouched."
+            )
+            return OperationResult(OperationOutcome.FAILED), 0
+        if guard_path is None:
+            # It vanished by itself, so nothing is being replaced after all and
+            # nothing may be tallied as an overwrite.
+            forced_overwrite = False
+        elif _file_fingerprint(guard_path) != replaced_fingerprint:
+            release_quarantined_destination(guard_path, dest_path, operation_name)
+            print(
+                f"Warning: '{display_path(dest_path)}' changed after Stackcopy "
+                "checked it, so it was not replaced. The source was kept; "
+                "re-run to reclassify it."
+            )
+            return OperationResult(OperationOutcome.FAILED), 0
+
+    try:
+        result, moved = _run_file_operation(
+            operation,
+            src_path,
+            dest_path,
+            operation_name,
+            src_size,
+            placed,
+        )
+    except BaseException:
+        # Includes KeyboardInterrupt: an interrupted replacement must put the
+        # destination it borrowed back.
+        if guard_path is not None:
+            release_quarantined_destination(guard_path, dest_path, operation_name)
+        raise
+
+    if guard_path is not None:
+        if result:
+            # The replacement landed, so the identified file it replaced is
+            # genuinely finished with.  Nothing else knows this name, so there
+            # is no other claim on it to respect.
+            try:
+                os.unlink(guard_path)
+            except OSError as cleanup_error:
+                print(
+                    f"Note: the replaced copy of '{display_path(dest_path)}' "
+                    f"could not be removed from '{display_path(guard_path)}': "
+                    f"{cleanup_error}"
+                )
+        else:
+            release_quarantined_destination(guard_path, dest_path, operation_name)
+
+    return result, moved
+
+
+def _run_file_operation(
+    operation, src_path, dest_path, operation_name, src_size, placed
+):
+    """Commit one copy or move onto a destination name expected to be free."""
     try:
         if operation == "move":
             try:
                 # Same-filesystem fast path (metadata only).  Nothing is
                 # copied, so no fsync is warranted here.
-                os.replace(src_path, dest_path)
+                atomic_rename_no_replace(src_path, dest_path)
                 return placed(), 0
+            except FileExistsError:
+                _report_destination_taken(operation_name, src_path, dest_path)
+                return OperationResult(OperationOutcome.FAILED), 0
             except OSError as move_error:
                 if move_error.errno == errno.EXDEV:
                     # Cross-device: durable copy, then delete the source.  The
@@ -1422,6 +1982,19 @@ def safe_file_operation(
         # Unknown operation: nothing was written, so nothing is tallied.
         return OperationResult(OperationOutcome.SUCCESS), 0
 
+    except FileExistsError:
+        # Something else claimed the destination between classification and
+        # commit.  The no-clobber commit refused rather than overwriting it.
+        _report_destination_taken(operation_name, src_path, dest_path)
+        return OperationResult(OperationOutcome.FAILED), 0
+    except HardLinkSourceRemovalError as removal_error:
+        print(
+            f"Note: {operation_name} '{src_path}' to '{dest_path}' created the "
+            "destination link, but the source could not be removed "
+            f"({removal_error.__cause__ or removal_error}). Stackcopy did not "
+            "unlink the destination; the source was kept."
+        )
+        return placed(OperationOutcome.COPIED_SOURCE_REMAINS), 0
     except DurabilityError as durability_error:
         print(
             f"Error {operation_name} '{src_path}' to '{dest_path}': "
@@ -1671,6 +2244,296 @@ def format_action_message(
         )
 
 
+# ---------------------------------------------------------------------------
+# ExifTool capability
+# ---------------------------------------------------------------------------
+# ExifTool stays optional: Stackcopy's heuristic finds in-camera stacks well
+# whenever the JPG still has its ORF source frames beside it.  What ExifTool
+# adds is the camera's own word for it - the OM SYSTEM StackedImage MakerNote
+# written into the finished JPG - which is the only thing that can recognise a
+# stack whose RAW frames were never copied, were already deleted, or were
+# never shot at all because the camera was set to JPEG only.
+#
+# "OM SYSTEM" MakerNotes arrived in ExifTool 12.41.  Older builds parse the
+# older "OLYMPUS" signature only, so an OM-1 file reads as an unrecognised
+# MakerNote block and the tag never appears.  That is a real capability floor,
+# not a preference, so it is checked once and reported in plain language
+# rather than silently degrading.
+
+# ExifTool 12.41 (2022-03-01) added OM SYSTEM MakerNote support; an OM-1's
+# StackedImage tag is unreadable below this.
+EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION = (12, 41)
+EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT = "12.41"
+# The version Stackcopy 1.6.0 is tested against and ships with its packaged
+# GUI builds.  Newer is fine; this is a known-good floor for "recommended",
+# never a requirement, and Stackcopy never checks the internet for it.
+EXIFTOOL_RECOMMENDED_VERSION_TEXT = "13.59"
+EXIFTOOL_DOWNLOAD_URL = "https://exiftool.org/"
+
+
+class ExifToolStatus(Enum):
+    """What ExifTool can do for this run, in one machine-readable word."""
+
+    # Present and new enough to read OM SYSTEM MakerNotes.
+    OM_SYSTEM_SUPPORTED = "om_system_supported"
+    # Present, but predates OM SYSTEM MakerNote support (< 12.41).
+    TOO_OLD = "too_old"
+    # An executable was found but could not be asked for its version.
+    UNUSABLE = "unusable"
+    # No ExifTool anywhere.
+    MISSING = "missing"
+
+
+class ExifToolSource(Enum):
+    """Where the ExifTool in use came from."""
+
+    OVERRIDE = "override"  # STACKCOPY_EXIFTOOL
+    BUNDLED = "bundled"  # shipped inside a packaged build
+    PATH = "path"  # found on PATH
+    NONE = "none"
+
+
+@dataclass(frozen=True)
+class ExifToolInfo:
+    """One process-wide answer about ExifTool, shared by the CLI and the GUI."""
+
+    executable: str | None
+    version: str | None
+    version_tuple: tuple[int, int] | None
+    source: ExifToolSource
+    error: str | None = None
+
+    @property
+    def available(self) -> bool:
+        """True when ExifTool can actually be run and reported a version."""
+        return self.executable is not None and self.version_tuple is not None
+
+    @property
+    def supports_om_system_makernotes(self) -> bool:
+        """True when this build can read an OM-1's StackedImage tag."""
+        return (
+            self.version_tuple is not None
+            and self.version_tuple >= EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION
+        )
+
+    @property
+    def status(self) -> ExifToolStatus:
+        if self.available:
+            if self.supports_om_system_makernotes:
+                return ExifToolStatus.OM_SYSTEM_SUPPORTED
+            return ExifToolStatus.TOO_OLD
+        # An executable that was found, or one that was explicitly asked for
+        # and could not be found, is a broken installation rather than an
+        # absent one - and saying so is what lets the user fix it.
+        if self.executable is not None or self.error is not None:
+            return ExifToolStatus.UNUSABLE
+        return ExifToolStatus.MISSING
+
+    @property
+    def is_bundled(self) -> bool:
+        return self.source is ExifToolSource.BUNDLED
+
+
+def parse_exiftool_version(text: str | None) -> tuple[int, int] | None:
+    """Parse what ``exiftool -ver`` prints, or None when it makes no sense.
+
+    ExifTool's version is a two-decimal number - 12.41, 13.59 - so a lone
+    digit after the point is a dropped trailing zero (12.4 is 12.40), not a
+    version between 12.03 and 12.04.
+    """
+    if not text:
+        return None
+    match = re.match(r"\s*(\d+)(?:\.(\d+))?", text)
+    if not match:
+        return None
+    major = int(match.group(1))
+    minor_text = match.group(2)
+    if not minor_text:
+        return (major, 0)
+    if len(minor_text) == 1:
+        minor_text += "0"
+    return (major, int(minor_text))
+
+
+def _bundled_exiftool_path() -> str | None:
+    """Find the ExifTool shipped inside a packaged build, if there is one.
+
+    Packaged GUI builds place it in an ``exiftool`` directory beside the
+    application's own files; the official Windows distribution needs its
+    ``exiftool_files`` support directory to stay next to the executable, so
+    the whole directory is bundled rather than the one binary.
+    """
+    roots: list[str] = []
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        roots.append(bundle_dir)
+    if getattr(sys, "frozen", False):
+        roots.append(os.path.dirname(os.path.abspath(sys.executable)))
+        # One-folder PyInstaller builds keep data files in _internal/.
+        roots.append(
+            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "_internal")
+        )
+    names = ("exiftool.exe",) if IS_WINDOWS else ("exiftool",)
+    for root in roots:
+        for name in names:
+            candidate = os.path.join(root, "exiftool", name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
+def _query_exiftool_version(executable: str) -> tuple[str | None, str | None]:
+    """Run ``exiftool -ver`` once. Returns (version_text, error_text)."""
+    try:
+        completed = subprocess.run(
+            [executable, "-ver"],
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "it did not answer -ver within 30 seconds"
+    except (OSError, subprocess.SubprocessError) as run_error:
+        return None, f"it could not be run ({run_error})"
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip().splitlines()
+        reason = detail[0] if detail else f"exit code {completed.returncode}"
+        return None, f"-ver failed ({reason})"
+    reported = (completed.stdout or "").strip()
+    if not reported:
+        return None, "-ver printed nothing"
+    return reported, None
+
+
+def _discover_exiftool() -> ExifToolInfo:
+    """Locate ExifTool and ask it, once, what version it is."""
+    override = (os.environ.get("STACKCOPY_EXIFTOOL") or "").strip()
+    if override:
+        executable = shutil.which(override) or (
+            override if os.path.isfile(override) else None
+        )
+        source = ExifToolSource.OVERRIDE
+        if executable is None:
+            return ExifToolInfo(
+                None,
+                None,
+                None,
+                source,
+                f"STACKCOPY_EXIFTOOL points at '{override}', which is not an "
+                "executable",
+            )
+    else:
+        # A packaged build prefers the ExifTool it shipped with, which is a
+        # known-good version, over whatever happens to be on PATH.
+        executable = _bundled_exiftool_path()
+        source = ExifToolSource.BUNDLED
+        if executable is None:
+            executable = shutil.which("exiftool")
+            source = ExifToolSource.PATH
+    if executable is None:
+        return ExifToolInfo(None, None, None, ExifToolSource.NONE)
+
+    reported, error = _query_exiftool_version(executable)
+    parsed = parse_exiftool_version(reported)
+    if parsed is None and error is None:
+        error = f"-ver printed '{reported}', which is not a version number"
+    return ExifToolInfo(executable, reported, parsed, source, error)
+
+
+# Resolved on first use and reused for the rest of the process: ExifTool is
+# asked for its version exactly once per run, never per file or per batch.
+_exiftool_info: ExifToolInfo | None = None
+
+
+def exiftool_info() -> ExifToolInfo:
+    """The shared ExifTool answer for this process."""
+    global _exiftool_info
+    if _exiftool_info is None:
+        _exiftool_info = _discover_exiftool()
+    return _exiftool_info
+
+
+def reset_exiftool_info() -> None:
+    """Forget the cached answer (tests, and a GUI re-check)."""
+    global _exiftool_info
+    _exiftool_info = None
+
+
+def exiftool_status_lines(info: ExifToolInfo | None = None) -> list[str]:
+    """The human explanation of what ExifTool is or is not doing for this run.
+
+    The wording leads with what actually gets worse without a suitable
+    ExifTool - stacks whose ORF files are not present alongside them - because
+    that is the failure a photographer would otherwise not understand.
+    """
+    if info is None:
+        info = exiftool_info()
+    status = info.status
+    if status is ExifToolStatus.OM_SYSTEM_SUPPORTED:
+        where = " (bundled)" if info.is_bundled else ""
+        return [f"ExifTool {info.version}{where} — OM System stack metadata enabled"]
+    if status is ExifToolStatus.TOO_OLD:
+        return [
+            f"ExifTool {info.version} is too old for OM System MakerNotes.",
+            "Using fallback detection; stacks without matching ORF files may "
+            "be missed. Update ExifTool "
+            f"({EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT} or newer, "
+            f"{EXIFTOOL_RECOMMENDED_VERSION_TEXT} recommended).",
+        ]
+    if status is ExifToolStatus.UNUSABLE:
+        where = f" at '{display_path(info.executable)}'" if info.executable else ""
+        return [
+            f"ExifTool{where} could not be used: {info.error}.",
+            "Using fallback stack detection; stacks may be missed if their ORF "
+            "files are absent.",
+        ]
+    return [
+        "ExifTool not found — using fallback stack detection.",
+        "Stacks may be missed if their ORF files are absent.",
+        f"Install ExifTool {EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT} or newer "
+        "for OM System camera metadata.",
+    ]
+
+
+_exiftool_status_reported = False
+
+
+def report_exiftool_status(info: ExifToolInfo | None = None) -> None:
+    """Say once, at the start of a run that uses it, what ExifTool can do.
+
+    Only called when stack detection is actually on: with
+    --no-stack-detection ExifTool is irrelevant to the run and nagging about
+    it would be noise.
+    """
+    global _exiftool_status_reported
+    if _exiftool_status_reported:
+        return
+    _exiftool_status_reported = True
+    for line in exiftool_status_lines(info):
+        print(line)
+
+
+def exiftool_plan_status(info: ExifToolInfo | None = None) -> dict[str, Any]:
+    """The machine-readable ExifTool status for --plan-json.
+
+    The GUI reads this instead of parsing human sentences out of stderr.
+    """
+    if info is None:
+        info = exiftool_info()
+    return {
+        "exiftool_status": info.status.value,
+        "exiftool_version": info.version,
+        "exiftool_source": info.source.value,
+        "exiftool_supports_om_system": info.supports_om_system_makernotes,
+        "exiftool_minimum_version": EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT,
+        "exiftool_recommended_version": EXIFTOOL_RECOMMENDED_VERSION_TEXT,
+        "exiftool_download_url": EXIFTOOL_DOWNLOAD_URL,
+    }
+
+
 def parse_stacked_image_value(value: Any) -> StackMetadata:
     """Interpret ExifTool's Olympus StackedImage value conservatively."""
     raw_value = None if value is None else str(value)
@@ -1719,9 +2582,16 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
     ExifTool is optional.  Missing executables, unsupported MakerNotes, absent
     tags, malformed output, and subprocess failures all produce UNKNOWN by
     omission so callers retain the heuristic fallback.
+
+    An ExifTool older than 12.41 is still worth running: it reads Olympus
+    MakerNotes correctly and only the newer OM SYSTEM signature is beyond it,
+    so it is asked anyway and simply returns no tag for OM-1 files.  What the
+    capability check changes is what the user is told, not whether ExifTool
+    runs.
     """
     results = {path: StackMetadata(StackMetadataState.UNKNOWN) for path in jpeg_paths}
-    exiftool = shutil.which("exiftool")
+    info = exiftool_info()
+    exiftool = info.executable if info.available else None
     if not exiftool or not jpeg_paths:
         return results
 
@@ -1843,7 +2713,10 @@ def main():
     """Main program entry point."""
     # Set up argument parser
     parser = argparse.ArgumentParser(
-        description="Process JPG files without corresponding raw files"
+        description=(
+            f"Stackcopy {STACKCOPY_VERSION} - process JPG files without "
+            "corresponding raw files"
+        )
     )
     parser.add_argument(
         "--version",
@@ -2036,6 +2909,8 @@ def main():
     # successes so the summary can never round them away.
     forced_overwrite_paths.clear()
     source_remains_paths.clear()
+    global _exiftool_status_reported
+    _exiftool_status_reported = False
     recovered_source_remains_count = 0
     recovery_dest_dirs: set[str] = set()
     # Legacy --lightroom input moves whose destination was written but whose
@@ -2044,6 +2919,12 @@ def main():
     lightroom_source_remains_count = 0
 
     args = parser.parse_args()
+
+    # Say which Stackcopy this is without being asked.  On stderr, because
+    # stdout has to stay usable for pipes and is exactly one JSON object under
+    # --plan-json; --version still works and exits during parse_args() above,
+    # so it never prints twice.
+    print(f"Stackcopy {STACKCOPY_VERSION}", file=sys.stderr)
 
     # A plan request reuses the real planner with dry-run filesystem semantics.
     # Route incidental diagnostics to stderr so stdout remains exactly one JSON
@@ -2128,6 +3009,15 @@ def main():
         parser.error(
             "--no-stack-detection can only be used with --lightroom or --lightroomimport."
         )
+
+    # Say what ExifTool can do before the scan starts, so the answer arrives
+    # before the waiting does.  Only for runs that actually consult it:
+    # --no-stack-detection makes ExifTool irrelevant, and being nagged about
+    # an irrelevant dependency is how people learn to ignore warnings.
+    if (
+        args.lightroom is not None or args.lightroomimport is not None
+    ) and not args.no_stack_detection:
+        report_exiftool_status()
 
     # Determine operation mode and set directories
     if args.copy:
@@ -3513,6 +4403,7 @@ def main():
             if args.leave_on_card and planned_sources:
                 would_be_empty = False
             payload = {
+                "stackcopy_version": STACKCOPY_VERSION,
                 "total": len(planned_moves),
                 "bytes": planned_bytes,
                 "stacks": accepted_stacks,
@@ -3528,6 +4419,8 @@ def main():
                 "source_is_removable": source_is_removable(src_dir),
                 "source_would_be_empty_after": would_be_empty,
             }
+            if not args.no_stack_detection:
+                payload.update(exiftool_plan_status())
             output_example = next(
                 (
                     move.basename_dest

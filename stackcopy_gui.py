@@ -30,8 +30,16 @@ import customtkinter as ctk  # noqa: E402
 from tkinter import filedialog, messagebox  # noqa: E402
 
 try:
-    from stackcopy import path_is_within  # noqa: E402
+    from stackcopy import (  # noqa: E402
+        EXIFTOOL_DOWNLOAD_URL,
+        EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT,
+        STACKCOPY_VERSION,
+        path_is_within,
+    )
 except Exception:  # pragma: no cover - fallback for a broken old bundle
+    STACKCOPY_VERSION = ""
+    EXIFTOOL_DOWNLOAD_URL = "https://exiftool.org/"
+    EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT = "12.41"
 
     def path_is_within(path: str, root: str) -> bool:
         import platform
@@ -51,10 +59,21 @@ except Exception:  # pragma: no cover - fallback for a broken old bundle
             return False
 
 
+try:
+    import stackcopy_updater  # noqa: E402
+except Exception:  # pragma: no cover - a bundle missing the module must still run
+    stackcopy_updater = None
+
+
 PROGRESS_SENTINEL = "@@SCPROGRESS"
 LOW_SPACE_SENTINEL = "@@SCLOWSPACE"
 TERMINATE_TIMEOUT_SECONDS = 3.0
 APP_NAME = "Stackcopy"
+# One version string for the CLI, the GUI, the packaged app's metadata and the
+# release tag: imported from stackcopy.py rather than repeated here, so they
+# cannot drift apart.  The fallback above only ever fires for a bundle whose
+# stackcopy module failed to load, in which case there is no version to show.
+APP_TITLE = f"{APP_NAME} {STACKCOPY_VERSION}".strip()
 SETTINGS_FILENAME = "gui-state.json"
 MOVE_MODE = "Move off the card"
 COPY_MODE = "Copy, leave card untouched"
@@ -142,6 +161,65 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
         return None
     normalized["source_subdirs_scanned"] = subdirs
     return normalized
+
+
+def exiftool_status_display(
+    plan: dict[str, object] | None,
+) -> tuple[str, str, bool] | None:
+    """Render the CLI's ExifTool capability report for the header strip.
+
+    Returns (message, tone, offer_download) or None when there is nothing to
+    say yet.  ``tone`` is "ok" or "warn"; only a warn state offers the
+    download link, and the link is only ever a link - the GUI never fetches
+    or installs anything on its own.
+
+    Reads the machine-readable fields from --plan-json rather than scraping
+    the human sentences the CLI prints, so the two can be worded
+    independently.
+    """
+    if not plan:
+        return None
+    status = plan.get("exiftool_status")
+    if not isinstance(status, str):
+        return None
+    version = plan.get("exiftool_version")
+    version_text = str(version) if isinstance(version, str) and version else "?"
+    minimum = str(
+        plan.get("exiftool_minimum_version") or EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT
+    )
+    if status == "om_system_supported":
+        where = " (bundled)" if plan.get("exiftool_source") == "bundled" else ""
+        return (
+            f"ExifTool {version_text}{where} — OM-1 stack metadata enabled",
+            "ok",
+            False,
+        )
+    if status == "too_old":
+        return (
+            f"ExifTool {version_text} is too old for OM SYSTEM MakerNotes. "
+            "Stackcopy will use conservative stack detection, which can miss "
+            "a stacked JPG whose ORF frames are not alongside it. "
+            f"Update ExifTool ({minimum} or newer).",
+            "warn",
+            True,
+        )
+    if status == "unusable":
+        return (
+            "ExifTool could not be used — falling back to conservative stack "
+            "detection, which can miss a stacked JPG whose ORF frames are not "
+            f"alongside it. Install ExifTool {minimum} or newer.",
+            "warn",
+            True,
+        )
+    if status == "missing":
+        return (
+            "ExifTool not found — using conservative stack detection, which "
+            "can miss a stacked JPG whose ORF frames are not alongside it. "
+            f"Install ExifTool {minimum} or newer for OM-1 camera metadata.",
+            "warn",
+            True,
+        )
+    return None
 
 
 def import_button_label(
@@ -285,6 +363,31 @@ def success_metrics(elapsed: float, byte_count: int, problems: int = 0) -> str:
     return " · ".join(details)
 
 
+def bundled_changelog_path() -> Path | None:
+    """Locate ChangeLog.md in a source tree or inside a packaged build.
+
+    Mirrors how ``stackcopy._bundled_exiftool_path`` searches: PyInstaller puts
+    data files under ``sys._MEIPASS``, beside the executable, or in
+    ``_internal/`` depending on the build style.
+    """
+    roots: list[Path] = [Path(__file__).resolve().parent]
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        roots.append(Path(bundle_dir))
+    if getattr(sys, "frozen", False):
+        executable_dir = Path(sys.executable).resolve().parent
+        roots.append(executable_dir)
+        roots.append(executable_dir / "_internal")
+    for root in roots:
+        candidate = root / "ChangeLog.md"
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:  # pragma: no cover - unreadable bundle path
+            continue
+    return None
+
+
 def _mono_family() -> str:
     if os.name == "nt":
         return "Consolas"
@@ -303,7 +406,19 @@ def _settings_path() -> Path:
     return base / APP_NAME / SETTINGS_FILENAME
 
 
-def load_gui_state() -> dict[str, str]:
+# gui-state.json began as a flat string-to-string map.  Booleans and numbers
+# are now stored as themselves - a settings file a human opens should say
+# ``true``, not ``"true"`` - but every reader below still accepts the old
+# string spelling, so a file written by an earlier Stackcopy loads unchanged.
+STATE_VALUE_TYPES = (str, bool, int, float)
+
+
+def load_gui_state() -> dict[str, object]:
+    """Read the saved settings. A missing or damaged file is simply no settings.
+
+    Nothing in here may raise: a corrupt gui-state.json - including corrupt
+    update-checker fields - must never be the reason the window fails to open.
+    """
     try:
         with _settings_path().open("r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -314,11 +429,38 @@ def load_gui_state() -> dict[str, str]:
     return {
         key: value
         for key, value in data.items()
-        if isinstance(key, str) and isinstance(value, str)
+        if isinstance(key, str) and isinstance(value, STATE_VALUE_TYPES)
     }
 
 
-def save_gui_state(state: dict[str, str]) -> None:
+def state_text(state: dict[str, object], key: str, default: str = "") -> str:
+    """A stored string, tolerating a value some older build wrote as a number."""
+    value = state.get(key, None)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return default
+
+
+def state_flag(state: dict[str, object], key: str, default: bool = False) -> bool:
+    """A stored boolean, whether it was written as JSON true or as "true"."""
+    value = state.get(key, None)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "yes", "1", "on"):
+            return True
+        if text in ("false", "no", "0", "off"):
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def save_gui_state(state: dict[str, object]) -> None:
     path = _settings_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -357,7 +499,7 @@ def volume_label(path: str) -> str | None:
 class StackcopyGUI(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Stackcopy — Import from card")
+        self.title(f"{APP_TITLE} — Import from card")
         self.geometry("920x860")
         self.minsize(820, 760)
         self.grid_columnconfigure(0, weight=1)
@@ -389,25 +531,35 @@ class StackcopyGUI(ctk.CTk):
         self._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
         self._stack_indexes: dict[str, int] = {}
         self._active_stack_name: str | None = None
+        self._update_info = None
+        self._update_generation = 0
+        self._update_checking = False
+        self._update_manual = False
+        self._update_dialog = None
+        self._update_after: str | None = None
 
         lightroom_default, stack_default = default_dirs()
+        # The whole settings file is kept in memory and written back whole, so
+        # keys this screen does not own - the update checker's, for instance -
+        # survive every save instead of being dropped on the next write.
         saved = load_gui_state()
-        self.src_var = ctk.StringVar(value=saved.get("source_dir", ""))
+        self._state: dict[str, object] = dict(saved)
+        self.src_var = ctk.StringVar(value=state_text(saved, "source_dir"))
         self.dst_var = ctk.StringVar(
-            value=saved.get("lightroom_dir", lightroom_default)
+            value=state_text(saved, "lightroom_dir", lightroom_default)
         )
-        self.stk_var = ctk.StringVar(value=saved.get("stack_input_dir", stack_default))
+        self.stk_var = ctk.StringVar(
+            value=state_text(saved, "stack_input_dir", stack_default)
+        )
         self.mode_var = ctk.StringVar(
-            value=COPY_MODE if saved.get("file_mode") == "copy" else MOVE_MODE
+            value=COPY_MODE if state_text(saved, "file_mode") == "copy" else MOVE_MODE
         )
-        self.verbose_var = ctk.BooleanVar(value=saved.get("verbose") == "true")
+        self.verbose_var = ctk.BooleanVar(value=state_flag(saved, "verbose"))
         self.detect_stacks_var = ctk.BooleanVar(
-            value=saved.get("detect_stacks", "true") == "true"
+            value=state_flag(saved, "detect_stacks", True)
         )
-        self.debug_stacks_var = ctk.BooleanVar(
-            value=saved.get("debug_stacks") == "true"
-        )
-        self._advanced_open = saved.get("advanced_open") == "true"
+        self.debug_stacks_var = ctk.BooleanVar(value=state_flag(saved, "debug_stacks"))
+        self._advanced_open = state_flag(saved, "advanced_open")
         self._log_open = False
 
         self.body = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -427,6 +579,7 @@ class StackcopyGUI(ctk.CTk):
         self.after(100, self._drain_queue)
         self.after(150, self._schedule_plan_scan)
         self._refresh_idle_plan()
+        self._schedule_automatic_update_check()
 
     # -- construction ----------------------------------------------------
 
@@ -440,6 +593,22 @@ class StackcopyGUI(ctk.CTk):
             anchor="w",
             font=ctk.CTkFont(size=27, weight="bold"),
         ).grid(row=0, column=0, sticky="ew")
+        version_row = ctk.CTkFrame(header, fg_color="transparent")
+        version_row.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        ctk.CTkLabel(
+            version_row,
+            text=APP_TITLE,
+            anchor="e",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray45", "gray62"),
+        ).grid(row=0, column=0, sticky="e")
+        # A permanent, always-available manual check. It sits beside the
+        # version it is about, which is where somebody wondering "am I
+        # current?" is already looking.
+        self.update_check_btn = self._text_button(
+            version_row, "Check for Updates", self._check_for_updates_manually
+        )
+        self.update_check_btn.grid(row=0, column=1, sticky="e", padx=(6, 0))
         ctk.CTkLabel(
             header,
             text=(
@@ -453,7 +622,79 @@ class StackcopyGUI(ctk.CTk):
             justify="left",
             wraplength=850,
             text_color=("gray32", "gray74"),
-        ).grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        # An unobtrusive capability line rather than a dialog: ExifTool is
+        # optional, so this reports what Stackcopy can do, and only offers a
+        # link when something is actually worse without it.
+        self.exiftool_row = ctk.CTkFrame(header, fg_color="transparent")
+        self.exiftool_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        self.exiftool_row.grid_columnconfigure(0, weight=1)
+        self.exiftool_var = ctk.StringVar(value="")
+        self.exiftool_label = ctk.CTkLabel(
+            self.exiftool_row,
+            textvariable=self.exiftool_var,
+            anchor="w",
+            justify="left",
+            wraplength=700,
+            font=ctk.CTkFont(size=12),
+            text_color=("gray45", "gray62"),
+        )
+        self.exiftool_label.grid(row=0, column=0, sticky="ew")
+        self.exiftool_link = self._text_button(
+            self.exiftool_row, "Get ExifTool", self._open_exiftool_page
+        )
+        self.exiftool_link.grid(row=0, column=1, padx=(10, 0))
+        self.exiftool_row.grid_remove()
+
+        # The automatic check reports itself here rather than in a dialog.
+        # Nobody launched Stackcopy to be interrupted by a version number;
+        # the details are one click away for anyone who wants them.
+        self.update_row = ctk.CTkFrame(header, fg_color="transparent")
+        self.update_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        self.update_row.grid_columnconfigure(0, weight=1)
+        self.update_var = ctk.StringVar(value="")
+        self.update_label = ctk.CTkLabel(
+            self.update_row,
+            textvariable=self.update_var,
+            anchor="w",
+            justify="left",
+            wraplength=700,
+            font=ctk.CTkFont(size=12),
+            text_color=("gray45", "gray62"),
+        )
+        self.update_label.grid(row=0, column=0, sticky="ew")
+        self.update_view_btn = self._text_button(
+            self.update_row, "View update", self._show_update_dialog
+        )
+        self.update_view_btn.grid(row=0, column=1, padx=(10, 0))
+        self.update_dismiss_btn = self._text_button(
+            self.update_row, "Dismiss", self._hide_update_notice
+        )
+        self.update_dismiss_btn.grid(row=0, column=2, padx=(4, 0))
+        self.update_row.grid_remove()
+
+    def _open_exiftool_page(self) -> None:
+        """Open the official download page. Never downloads anything itself."""
+        self._open_url(EXIFTOOL_DOWNLOAD_URL)
+
+    def _refresh_exiftool_status(self) -> None:
+        display = exiftool_status_display(self._plan)
+        if display is None:
+            # A cleared or failed plan says nothing new about ExifTool, and
+            # its state cannot change while the app is running, so the last
+            # answer stays put rather than blinking out.
+            return
+        message, tone, offer_download = display
+        self.exiftool_var.set(message)
+        self.exiftool_label.configure(
+            text_color=("#8a5a00", "#e0b050") if tone == "warn" else ("gray45", "gray62")
+        )
+        if offer_download:
+            self.exiftool_link.grid()
+        else:
+            self.exiftool_link.grid_remove()
+        self.exiftool_row.grid()
 
     def _build_source_strip(self) -> None:
         self.source_frame = ctk.CTkFrame(self.body, corner_radius=10)
@@ -909,18 +1150,19 @@ class StackcopyGUI(ctk.CTk):
 
     def _save_current_defaults(self) -> None:
         self._save_state_scheduled = False
-        save_gui_state(
+        self._state.update(
             {
                 "source_dir": self.src_var.get(),
                 "lightroom_dir": self.dst_var.get(),
                 "stack_input_dir": self.stk_var.get(),
                 "file_mode": "copy" if self.mode_var.get() == COPY_MODE else "move",
-                "verbose": "true" if self.verbose_var.get() else "false",
-                "detect_stacks": "true" if self.detect_stacks_var.get() else "false",
-                "debug_stacks": "true" if self.debug_stacks_var.get() else "false",
-                "advanced_open": "true" if self._advanced_open else "false",
+                "verbose": bool(self.verbose_var.get()),
+                "detect_stacks": bool(self.detect_stacks_var.get()),
+                "debug_stacks": bool(self.debug_stacks_var.get()),
+                "advanced_open": bool(self._advanced_open),
             }
         )
+        save_gui_state(self._state)
 
     def _schedule_plan_scan(self) -> None:
         if self._running:
@@ -1114,6 +1356,7 @@ class StackcopyGUI(ctk.CTk):
 
     def _apply_plan(self, payload: dict[str, object] | None) -> None:
         self._plan = payload
+        self._refresh_exiftool_status()
         self._set_plan_scanning(False)
         if payload is None:
             self.source_scan_var.set(
@@ -1329,6 +1572,8 @@ class StackcopyGUI(ctk.CTk):
                         problems=1,
                         allow_open=False,
                     )
+                elif kind == "update":
+                    self._handle_update_result(payload)
                 elif kind == "done":
                     self._handle_done(int(payload))
         except queue.Empty:
@@ -1671,6 +1916,304 @@ class StackcopyGUI(ctk.CTk):
         self._refresh_idle_plan()
         self._schedule_plan_scan()
 
+    # -- update notifications --------------------------------------------
+    #
+    # Stackcopy only ever *tells* you about a new version. It does not
+    # download, replace, install, or restart anything, and the one URL it
+    # will open is checked against this project's own release pages first.
+
+    def _updates_available(self) -> bool:
+        return stackcopy_updater is not None and bool(STACKCOPY_VERSION)
+
+    def _schedule_automatic_update_check(self) -> None:
+        """Queue the startup check. Never blocks the window from appearing."""
+        if not self._updates_available():
+            return
+        delay = int(stackcopy_updater.STARTUP_DELAY_SECONDS * 1000)
+        self._update_after = self.after(delay, self._run_automatic_update_check)
+
+    def _run_automatic_update_check(self) -> None:
+        self._update_after = None
+        if self._closing or not self._updates_available():
+            return
+        try:
+            due = stackcopy_updater.should_check_automatically(self._state)
+        except Exception:
+            # Unreadable updater state is not worth a crash; skip this launch.
+            return
+        if due:
+            self._start_update_check(manual=False)
+
+    def _check_for_updates_manually(self) -> None:
+        """The Check for Updates button. Always runs - cooldowns do not apply."""
+        if not self._updates_available():
+            message = "This build cannot check for updates."
+            if stackcopy_updater is not None:
+                message += f"\n\nSee {stackcopy_updater.RELEASES_URL}"
+            messagebox.showinfo(APP_NAME, message)
+            return
+        if self._update_checking:
+            self._set_update_notice("Already checking for updates…")
+            return
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual: bool) -> None:
+        self._update_checking = True
+        self._update_manual = manual
+        self._update_generation += 1
+        generation = self._update_generation
+        current = STACKCOPY_VERSION
+
+        if manual:
+            self.update_check_btn.configure(state="disabled")
+            self._set_update_notice("Checking GitHub for a newer version…")
+
+        def worker() -> None:
+            payload: dict[str, object] = {
+                "generation": generation,
+                "manual": manual,
+                "info": None,
+                "error": "",
+            }
+            try:
+                payload["info"] = stackcopy_updater.check_for_update(current)
+            except stackcopy_updater.UpdateCheckError as exc:
+                payload["error"] = str(exc)
+            except Exception as exc:  # pragma: no cover - defensive
+                payload["error"] = f"The update check failed: {exc}"
+            self._queue.put(("update", payload))
+
+        threading.Thread(
+            target=worker, name="stackcopy-update-check", daemon=True
+        ).start()
+
+    def _handle_update_result(self, payload: dict) -> None:
+        """Runs on the UI thread, out of the existing queue drain."""
+        if self._closing:
+            return
+        if payload.get("generation") != self._update_generation:
+            return
+        self._update_checking = False
+        manual = bool(payload.get("manual"))
+        try:
+            self.update_check_btn.configure(state="normal")
+        except Exception:  # pragma: no cover - teardown races
+            pass
+
+        error = str(payload.get("error") or "")
+        if error:
+            # A background failure is recorded and forgotten. Being offline is
+            # not an error the user asked to hear about.
+            stackcopy_updater.record_failure(self._state)
+            self._save_current_defaults()
+            if manual:
+                self._set_update_notice(f"Could not check for updates — {error}")
+                messagebox.showwarning(
+                    APP_NAME,
+                    f"Stackcopy could not check for updates.\n\n{error}\n\n"
+                    f"You can look at the releases page yourself:\n"
+                    f"{stackcopy_updater.RELEASES_URL}",
+                )
+            else:
+                self._hide_update_notice()
+            return
+
+        info = payload.get("info")
+        stackcopy_updater.record_success(self._state)
+        self._save_current_defaults()
+        self._update_info = info
+
+        if not stackcopy_updater.should_notify(info, self._state, manual=manual):
+            # Nothing newer, or an automatic check finding a skipped version.
+            if manual:
+                self._set_update_notice(
+                    f"Stackcopy {info.current_version} is the latest version."
+                )
+                messagebox.showinfo(
+                    APP_NAME,
+                    f"Stackcopy {info.current_version} is up to date.\n\n"
+                    f"The newest release on GitHub is {info.latest_version}.",
+                )
+            else:
+                self._hide_update_notice()
+            return
+
+        self._notify_update(info)
+        if manual:
+            self._show_update_dialog()
+
+    def _notify_update(self, info) -> None:
+        self._update_info = info
+        self._set_update_notice(f"{info.headline} — you have {info.current_version}.")
+        self.update_label.configure(text_color=("#1f6aa5", "#5aa7df"))
+        self.update_view_btn.grid()
+        self.update_dismiss_btn.grid()
+
+    def _set_update_notice(self, message: str) -> None:
+        self.update_var.set(message)
+        self.update_label.configure(text_color=("gray45", "gray62"))
+        self.update_view_btn.grid_remove()
+        self.update_dismiss_btn.grid_remove()
+        self.update_row.grid()
+
+    def _hide_update_notice(self) -> None:
+        self.update_var.set("")
+        self.update_row.grid_remove()
+
+    def _show_update_dialog(self) -> None:
+        info = self._update_info
+        if info is None or stackcopy_updater is None:
+            return
+        existing = self._update_dialog
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.focus()
+                return
+        except Exception:  # pragma: no cover - the dialog went away underneath us
+            self._update_dialog = None
+
+        dialog = ctk.CTkToplevel(self)
+        self._update_dialog = dialog
+        dialog.title("Update available")
+        dialog.geometry("620x460")
+        dialog.transient(self)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            dialog,
+            text=info.headline,
+            anchor="w",
+            font=ctk.CTkFont(size=21, weight="bold"),
+        ).grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 2))
+        installed = f"You have Stackcopy {info.current_version}."
+        if info.published_at[:10]:
+            installed += f"  Released {info.published_at[:10]}."
+        ctk.CTkLabel(
+            dialog,
+            text=installed,
+            anchor="w",
+            text_color=("gray38", "gray66"),
+        ).grid(row=1, column=0, sticky="ew", padx=20)
+
+        notes = ctk.CTkTextbox(dialog, wrap="word", font=ctk.CTkFont(size=12))
+        notes.grid(row=2, column=0, sticky="nsew", padx=20, pady=(12, 8))
+        notes.insert(
+            "1.0",
+            info.notes
+            or "No release notes were published. Open the release page for details.",
+        )
+        notes.configure(state="disabled")
+
+        ctk.CTkLabel(
+            dialog,
+            text=(
+                "Stackcopy never downloads or installs an update by itself. "
+                "Opening the release page lets you decide."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=560,
+            font=ctk.CTkFont(size=11),
+            text_color=("gray45", "gray62"),
+        ).grid(row=3, column=0, sticky="ew", padx=20)
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.grid(row=4, column=0, sticky="ew", padx=20, pady=(12, 18))
+        buttons.grid_columnconfigure(1, weight=1)
+        self._text_button(buttons, "Skip This Version", self._skip_this_version).grid(
+            row=0, column=0, sticky="w"
+        )
+        ctk.CTkButton(
+            buttons,
+            text="Remind Me Later",
+            width=130,
+            fg_color="transparent",
+            border_width=1,
+            command=self._remind_me_later,
+        ).grid(row=0, column=2, padx=(0, 8))
+        ctk.CTkButton(
+            buttons,
+            text="View Changelog",
+            width=130,
+            fg_color="transparent",
+            border_width=1,
+            command=self._open_changelog,
+        ).grid(row=0, column=3, padx=(0, 8))
+        ctk.CTkButton(
+            buttons, text="Open Release", width=120, command=self._open_release_page
+        ).grid(row=0, column=4)
+
+        dialog.protocol("WM_DELETE_WINDOW", self._close_update_dialog)
+        # Grab only after the window exists, or the lift races the map on X11.
+        dialog.after(120, lambda: self._focus_dialog(dialog))
+
+    def _focus_dialog(self, dialog) -> None:
+        try:
+            if dialog.winfo_exists():
+                dialog.lift()
+                dialog.focus_force()
+        except Exception:  # pragma: no cover - platform dependent
+            pass
+
+    def _remind_me_later(self) -> None:
+        """Dismiss this notification without remembering anything about it.
+
+        Nothing is persisted, so the next ordinary check raises the same
+        version again - which is the whole difference from Skip This Version.
+        """
+        self._close_update_dialog()
+        self._hide_update_notice()
+
+    def _close_update_dialog(self) -> None:
+        """Close the dialog only; the header notice stays until dismissed."""
+        dialog = self._update_dialog
+        self._update_dialog = None
+        if dialog is not None:
+            try:
+                dialog.destroy()
+            except Exception:  # pragma: no cover - teardown races
+                pass
+
+    def _skip_this_version(self) -> None:
+        info = self._update_info
+        if info is not None and stackcopy_updater is not None:
+            # The normalized application version, so every -buildN re-cut of
+            # it stays skipped as well.
+            stackcopy_updater.record_skip(self._state, info.latest_version)
+            self._save_current_defaults()
+        self._close_update_dialog()
+        self._hide_update_notice()
+
+    def _open_release_page(self) -> None:
+        info = self._update_info
+        if info is None or stackcopy_updater is None:
+            return
+        # Already validated when the response was parsed; checked again here so
+        # the guarantee lives next to the browser call.
+        url = stackcopy_updater.safe_release_url(info.release_url)
+        self._close_update_dialog()
+        self._open_url(url)
+
+    def _open_changelog(self) -> None:
+        """Prefer the copy that shipped with this build; fall back to GitHub."""
+        local = bundled_changelog_path()
+        if local is not None and self._open_url(local.as_uri(), quiet=True):
+            return
+        self._open_url(stackcopy_updater.CHANGELOG_URL)
+
+    def _open_url(self, url: str, quiet: bool = False) -> bool:
+        import webbrowser
+
+        try:
+            if webbrowser.open(url):
+                return True
+        except Exception:  # pragma: no cover - platform dependent
+            pass
+        if not quiet:
+            messagebox.showerror(APP_NAME, f"Could not open:\n{url}")
+        return False
+
     def _on_close(self) -> None:
         process = self._proc
         if process and process.poll() is None:
@@ -1681,6 +2224,12 @@ class StackcopyGUI(ctk.CTk):
             if not self._terminate_process(process, "stop"):
                 return
         self._closing = True
+        if self._update_after is not None:
+            try:
+                self.after_cancel(self._update_after)
+            except Exception:
+                pass
+            self._update_after = None
         if self._plan_after is not None:
             self.after_cancel(self._plan_after)
             self._plan_after = None

@@ -291,17 +291,23 @@ class ProtectedSourceDurabilityTests(unittest.TestCase):
         self.dest.parent.mkdir(parents=True, exist_ok=True)
 
     def cross_device(self):
-        """Force the durable copy path by reporting EXDEV for the fast rename."""
-        real_replace = os.replace
+        """Force the durable copy path by reporting EXDEV for the fast rename.
+
+        The fast path is the no-clobber commit primitive, not os.replace(), so
+        that is where a cross-filesystem move announces itself.
+        """
+        real_rename = stackcopy.atomic_rename_no_replace
         state = {"first": True}
 
-        def replace(src, dst, **kwargs):
+        def rename(src, dst):
             if state["first"] and os.fspath(dst) == str(self.dest):
                 state["first"] = False
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
-            return real_replace(src, dst, **kwargs)
+            return real_rename(src, dst)
 
-        return mock.patch.object(stackcopy.os, "replace", side_effect=replace)
+        return mock.patch.object(
+            stackcopy, "atomic_rename_no_replace", side_effect=rename
+        )
 
     def test_read_only_source_still_moves_durably(self):
         os.chmod(self.src, stat.S_IRUSR)
@@ -549,7 +555,7 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
             write_file(source / "P8080009.ORF", b"stuck", base.replace(second=30))
 
             real_operation = stackcopy.safe_file_operation
-            real_replace = os.replace
+            real_rename = stackcopy.atomic_rename_no_replace
             real_unlink = os.unlink
 
             def flaky(operation, src, dest, description, *rest):
@@ -557,11 +563,11 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
                     return False, 0
                 return real_operation(operation, src, dest, description, *rest)
 
-            def replace(src, dst, **kwargs):
+            def rename(src, dst):
                 # Force the durable cross-device copy path for the stuck file.
                 if os.fspath(src).endswith("P8080009.ORF"):
                     raise OSError(errno.EXDEV, "Invalid cross-device link")
-                return real_replace(src, dst, **kwargs)
+                return real_rename(src, dst)
 
             def unlink(path, **kwargs):
                 if os.fspath(path).endswith("card/P8080009.ORF"):
@@ -581,7 +587,9 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
                     mock.patch.object(
                         stackcopy, "safe_file_operation", side_effect=flaky
                     ),
-                    mock.patch.object(stackcopy.os, "replace", side_effect=replace),
+                    mock.patch.object(
+                        stackcopy, "atomic_rename_no_replace", side_effect=rename
+                    ),
                     mock.patch.object(stackcopy.os, "unlink", side_effect=unlink),
                 ),
             )
@@ -633,7 +641,7 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
             stack_input = root / "StackInput"
             write_file(source / "P8080001.ORF", b"raw", datetime(2026, 8, 24, 12))
 
-            def replace(src, dst, **kwargs):
+            def rename(src, dst):
                 raise OSError(errno.EIO, "every destination is broken")
 
             code, output = run_main(
@@ -642,7 +650,9 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
                 stack_input=stack_input,
                 metadata={},
                 extra_contexts=(
-                    mock.patch.object(stackcopy.os, "replace", side_effect=replace),
+                    mock.patch.object(
+                        stackcopy, "atomic_rename_no_replace", side_effect=rename
+                    ),
                     mock.patch.object(
                         stackcopy.shutil,
                         "copyfile",
@@ -683,14 +693,14 @@ class LegacyLightroomSourceRemainsTests(unittest.TestCase):
                 )
             write_file(source / "P8080005.JPG", b"stack output", base.replace(minute=1))
 
-            real_replace = os.replace
+            real_rename = stackcopy.atomic_rename_no_replace
             real_unlink = os.unlink
 
-            def replace(src, dst, **kwargs):
+            def rename(src, dst):
                 # Force the cross-device copy path for one input file only.
                 if os.fspath(src).endswith("P8080001.ORF"):
                     raise OSError(errno.EXDEV, "Invalid cross-device link")
-                return real_replace(src, dst, **kwargs)
+                return real_rename(src, dst)
 
             def unlink(path, **kwargs):
                 if os.fspath(path).endswith("P8080001.ORF"):
@@ -703,7 +713,9 @@ class LegacyLightroomSourceRemainsTests(unittest.TestCase):
                 stack_input=stack_input,
                 metadata={},
                 extra_contexts=(
-                    mock.patch.object(stackcopy.os, "replace", side_effect=replace),
+                    mock.patch.object(
+                        stackcopy, "atomic_rename_no_replace", side_effect=rename
+                    ),
                     mock.patch.object(stackcopy.os, "unlink", side_effect=unlink),
                 ),
             )
