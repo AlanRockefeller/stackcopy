@@ -101,7 +101,9 @@ class ProgressParserTests(unittest.TestCase):
         window._current_role = None
         window._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
         window._degraded = False
-        window._plan = plan_payload(total=5, stacked_outputs=1, stack_inputs=2, others=2)
+        window._plan = plan_payload(
+            total=5, stacked_outputs=1, stack_inputs=2, others=2
+        )
         window.progress = mock.Mock()
         window.phase_var = mock.Mock()
         window.current_file_var = mock.Mock()
@@ -195,12 +197,8 @@ class TerminalSummaryTests(unittest.TestCase):
         )
 
     def test_success_metrics_pluralize_reported_problems(self):
-        self.assertEqual(
-            gui.success_metrics(1.0, 0, 1), "1.0 seconds · 1 problem"
-        )
-        self.assertEqual(
-            gui.success_metrics(1.0, 0, 3), "1.0 seconds · 3 problems"
-        )
+        self.assertEqual(gui.success_metrics(1.0, 0, 1), "1.0 seconds · 1 problem")
+        self.assertEqual(gui.success_metrics(1.0, 0, 3), "1.0 seconds · 3 problems")
 
     def test_cli_summary_uses_final_failure_and_import_counts(self):
         parsed = gui.parse_cli_summary(

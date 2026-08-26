@@ -56,9 +56,7 @@ gui = load_gui_module()
 
 class SettingsFileTests(unittest.TestCase):
     def setUp(self):
-        self.directory = Path(
-            __import__("tempfile").mkdtemp(prefix="stackcopy-state-")
-        )
+        self.directory = Path(__import__("tempfile").mkdtemp(prefix="stackcopy-state-"))
         self.path = self.directory / "gui-state.json"
         patcher = mock.patch.object(gui, "_settings_path", lambda: self.path)
         patcher.start()
@@ -197,9 +195,7 @@ class StatePreservationTests(unittest.TestCase):
         self.assertEqual(written["file_mode"], "copy")
         self.assertIs(written[updater.ENABLED_KEY], False)
         self.assertEqual(written[updater.SKIPPED_KEY], "1.6.0")
-        self.assertEqual(
-            written[updater.LAST_SUCCESS_KEY], "2026-08-26T12:00:00+00:00"
-        )
+        self.assertEqual(written[updater.LAST_SUCCESS_KEY], "2026-08-26T12:00:00+00:00")
 
     def test_recording_a_check_does_not_discard_the_chosen_folders(self):
         _, target = self.save({})

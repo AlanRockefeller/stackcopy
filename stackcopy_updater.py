@@ -26,13 +26,9 @@ from urllib.parse import urlsplit
 GITHUB_OWNER = "AlanRockefeller"
 GITHUB_REPO = "stackcopy"
 GITHUB_REPOSITORY = f"{GITHUB_OWNER}/{GITHUB_REPO}"
-LATEST_RELEASE_URL = (
-    f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
-)
+LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
-CHANGELOG_URL = (
-    f"https://github.com/{GITHUB_REPOSITORY}/blob/main/ChangeLog.md"
-)
+CHANGELOG_URL = f"https://github.com/{GITHUB_REPOSITORY}/blob/main/ChangeLog.md"
 USER_AGENT = f"Stackcopy-Update-Checker (+https://github.com/{GITHUB_REPOSITORY})"
 REQUEST_TIMEOUT_SECONDS = 6.0
 
@@ -280,9 +276,7 @@ def fetch_latest_release(
         ) from exc
 
     if not isinstance(payload, dict):
-        raise UpdateCheckError(
-            "GitHub returned an unexpected release response"
-        )
+        raise UpdateCheckError("GitHub returned an unexpected release response")
     return payload
 
 

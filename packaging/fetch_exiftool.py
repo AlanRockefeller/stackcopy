@@ -36,9 +36,7 @@ from pathlib import Path
 # the checksum in the same commit; there is no "latest" lookup on purpose.
 EXIFTOOL_VERSION = "13.59"
 ARCHIVE_NAME = f"exiftool-{EXIFTOOL_VERSION}_64.zip"
-ARCHIVE_URL = (
-    f"https://sourceforge.net/projects/exiftool/files/{ARCHIVE_NAME}/download"
-)
+ARCHIVE_URL = f"https://sourceforge.net/projects/exiftool/files/{ARCHIVE_NAME}/download"
 ARCHIVE_SHA256 = "44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba9ec"
 
 # Inside the zip: "exiftool(-k).exe" opens its own documentation when
@@ -102,8 +100,7 @@ def extract(archive: Path, target: Path) -> None:
         support = root / SUPPORT_DIRECTORY
         if not executable.is_file() or not support.is_dir():
             raise RuntimeError(
-                f"{archive.name} does not have the expected "
-                f"{ARCHIVE_ROOT}/ layout"
+                f"{archive.name} does not have the expected " f"{ARCHIVE_ROOT}/ layout"
             )
         shutil.copy2(executable, target / "exiftool.exe")
         shutil.copytree(support, target / SUPPORT_DIRECTORY)

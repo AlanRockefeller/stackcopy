@@ -79,9 +79,7 @@ class FakeExifTool:
         )
 
 
-def discover(
-    fake=None, *, which="/usr/bin/exiftool", environment=None, bundled=None
-):
+def discover(fake=None, *, which="/usr/bin/exiftool", environment=None, bundled=None):
     """Run discovery once with the outside world mocked out."""
     fake = fake or FakeExifTool()
     with ExitStack() as stack:
@@ -205,9 +203,9 @@ class CapabilityStateTests(unittest.TestCase):
         self.assertEqual(info.status, stackcopy.ExifToolStatus.UNUSABLE)
         self.assertIsNotNone(info.error)
         self.assertIn("banana", info.error)
-        self.assertIn("could not be used", " ".join(
-            stackcopy.exiftool_status_lines(info)
-        ))
+        self.assertIn(
+            "could not be used", " ".join(stackcopy.exiftool_status_lines(info))
+        )
 
     def test_empty_version_output(self):
         info, _fake = discover(FakeExifTool(""))
@@ -534,9 +532,7 @@ class GuiStatusHelperTests(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["exiftool_status"], "too_old")
-        self.assertEqual(
-            gui.exiftool_status_display(parsed)[1], "warn"
-        )
+        self.assertEqual(gui.exiftool_status_display(parsed)[1], "warn")
 
 
 # ---------------------------------------------------------------------------
@@ -550,9 +546,7 @@ class VersionVisibilityTests(unittest.TestCase):
 
     def test_the_gui_does_not_hard_code_its_own_copy(self):
         self.assertEqual(gui.STACKCOPY_VERSION, stackcopy.STACKCOPY_VERSION)
-        self.assertEqual(
-            gui.APP_TITLE, f"Stackcopy {stackcopy.STACKCOPY_VERSION}"
-        )
+        self.assertEqual(gui.APP_TITLE, f"Stackcopy {stackcopy.STACKCOPY_VERSION}")
 
     def test_no_second_hard_coded_version_string_in_the_gui(self):
         # The GUI must read the canonical constant, not repeat the number.
@@ -569,9 +563,7 @@ class VersionVisibilityTests(unittest.TestCase):
         """Run the packaging spec's version logic without PyInstaller."""
         import re as regex
 
-        source = (ROOT / "packaging" / "stackcopy_gui.spec").read_text(
-            encoding="utf-8"
-        )
+        source = (ROOT / "packaging" / "stackcopy_gui.spec").read_text(encoding="utf-8")
         block = source[
             source.index("def canonical_version():") : source.index(
                 'print(f"Stackcopy version:'

@@ -523,6 +523,7 @@ class InterruptionTests(OperationHarness):
         self.assertEqual(self.src.read_bytes(), b"irreplaceable")
         self.assertEqual(sidecars(self.dest_dir), [])
 
+
 # ---------------------------------------------------------------------------
 # The primitives themselves
 # ---------------------------------------------------------------------------
@@ -720,12 +721,11 @@ class NoReplacePrimitiveTests(unittest.TestCase):
         self.assertEqual(self.dest.read_bytes(), b"claimed by somebody else")
         self.assertIn("was not deleted", output.getvalue())
 
+
 class ReadOnlyDestinationDirectoryTests(OperationHarness):
     def test_a_commit_into_a_read_only_directory_fails_closed(self):
         os.chmod(self.dest_dir, stat.S_IRUSR | stat.S_IXUSR)
-        self.addCleanup(
-            os.chmod, self.dest_dir, stat.S_IRWXU
-        )
+        self.addCleanup(os.chmod, self.dest_dir, stat.S_IRWXU)
 
         result, _moved, output = self.run_operation()
 
@@ -868,8 +868,12 @@ class WholeRunRaceTests(unittest.TestCase):
                 "P8081868__2.ORF",
             ],
         )
-        self.assertEqual((self.dest.parent / "P8081868__2.ORF").read_bytes(), b"irreplaceable")
-        self.assertEqual((self.dest.parent / "P8081868__2.JPG").read_bytes(), b"new jpg")
+        self.assertEqual(
+            (self.dest.parent / "P8081868__2.ORF").read_bytes(), b"irreplaceable"
+        )
+        self.assertEqual(
+            (self.dest.parent / "P8081868__2.JPG").read_bytes(), b"new jpg"
+        )
 
     def test_a_race_never_re_suffixes_and_splits_companions(self):
         # A stem's JPG and RAW are deliberately planned with one shared
@@ -904,9 +908,7 @@ class WholeRunRaceTests(unittest.TestCase):
         # The companion that made it kept the planned suffix, and nothing was
         # filed under a newly invented one.
         self.assertIn("P8081868__2.JPG", landed)
-        self.assertFalse(
-            [name for name in landed if "__3" in name], landed
-        )
+        self.assertFalse([name for name in landed if "__3" in name], landed)
         # The intruder is untouched and the unplaced source is still on the card.
         self.assertEqual(intruded.read_bytes(), b"somebody else's raw")
         self.assertEqual(self.src.read_bytes(), b"irreplaceable")
@@ -973,9 +975,7 @@ class PlatformWithoutNativeRenameTests(unittest.TestCase):
             with mock.patch.object(sys, "platform", "linux"):
                 with mock.patch.object(stackcopy, "IS_WINDOWS", False):
                     with mock.patch.object(stackcopy, "IS_MACOS", False):
-                        self.assertFalse(
-                            stackcopy.native_rename_no_replace_available()
-                        )
+                        self.assertFalse(stackcopy.native_rename_no_replace_available())
 
     def test_commits_still_work_with_no_native_rename(self):
         stackcopy._native_rename_no_replace_impl = "unresolved"
@@ -990,9 +990,7 @@ class PlatformWithoutNativeRenameTests(unittest.TestCase):
                 stack.enter_context(mock.patch.object(stackcopy, "IS_WINDOWS", False))
                 stack.enter_context(mock.patch.object(stackcopy, "IS_MACOS", False))
                 stack.enter_context(mock.patch.object(sys, "platform", "aix7"))
-                mechanism = stackcopy.atomic_rename_no_replace(
-                    str(source), str(target)
-                )
+                mechanism = stackcopy.atomic_rename_no_replace(str(source), str(target))
             self.assertEqual(mechanism, stackcopy.NoReplaceMechanism.HARD_LINK)
             self.assertEqual(target.read_bytes(), b"payload")
 

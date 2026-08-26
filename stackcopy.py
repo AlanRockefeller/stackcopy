@@ -510,9 +510,7 @@ def card_would_be_empty_after(source_dir: str, removed_paths=()) -> bool:
                 dirs[:] = []
                 continue
             dirs[:] = [
-                name
-                for name in dirs
-                if name.casefold() not in _CARD_HOUSEKEEPING_DIRS
+                name for name in dirs if name.casefold() not in _CARD_HOUSEKEEPING_DIRS
             ]
             for filename in files:
                 if filename.casefold() in _CARD_HOUSEKEEPING_FILES:
@@ -1625,9 +1623,7 @@ forced_overwrite_paths: list[str] = []
 source_remains_paths: list[str] = []
 
 
-def _destination_still_holds(
-    dest_path: str, pinned: FileFingerprint | None
-) -> bool:
+def _destination_still_holds(dest_path: str, pinned: FileFingerprint | None) -> bool:
     """True when dest_path still names exactly the pinned file."""
     if pinned is None:
         return False
@@ -1824,7 +1820,9 @@ def safe_file_operation(
     replaced_fingerprint: FileFingerprint | None = None
     if check.state == DestinationState.ZERO_BYTE_RECOVERABLE:
         if not force:
-            msg = "replacing from source" if not dry_run else "would replace from source"
+            msg = (
+                "replacing from source" if not dry_run else "would replace from source"
+            )
             print(f"Note: destination '{dest_path}' exists but is 0 bytes; {msg}.")
         replaced_fingerprint = check.destination_fingerprint
     elif check.state == DestinationState.CONFLICT:

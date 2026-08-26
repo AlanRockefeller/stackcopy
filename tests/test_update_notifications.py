@@ -21,7 +21,6 @@ sys.path.insert(0, str(ROOT))
 
 import stackcopy_updater as updater  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Test doubles for the one HTTP call
 # ---------------------------------------------------------------------------
@@ -341,9 +340,7 @@ class UpdateCheckTests(unittest.TestCase):
 
     def test_an_unexpected_response_shape_is_an_error(self):
         for body in ("[]", '"hello"', "null", "42"):
-            with self.subTest(body=body), self.assertRaises(
-                updater.UpdateCheckError
-            ):
+            with self.subTest(body=body), self.assertRaises(updater.UpdateCheckError):
                 updater.check_for_update("1.5.9", opener=opener_for(body))
 
     def test_undecodable_bytes_are_an_error(self):
@@ -451,9 +448,7 @@ class UpdateCheckTests(unittest.TestCase):
         summary = updater.summarize_release_notes(
             "### Added\n\n- One\n- Two\n\n\n\n### Fixed\n\n- Three\n"
         )
-        self.assertEqual(
-            summary, "### Added\n\n- One\n- Two\n\n### Fixed\n\n- Three"
-        )
+        self.assertEqual(summary, "### Added\n\n- One\n- Two\n\n### Fixed\n\n- Three")
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +482,9 @@ class CooldownTests(unittest.TestCase):
             updater.should_check_automatically(state, NOW + timedelta(hours=1))
         )
         self.assertFalse(
-            updater.should_check_automatically(state, NOW + timedelta(hours=23, minutes=59))
+            updater.should_check_automatically(
+                state, NOW + timedelta(hours=23, minutes=59)
+            )
         )
         self.assertTrue(
             updater.should_check_automatically(state, NOW + timedelta(hours=24))
@@ -508,9 +505,7 @@ class CooldownTests(unittest.TestCase):
     def test_the_retry_interval_is_much_shorter_than_the_success_cooldown(self):
         self.assertEqual(updater.SUCCESS_COOLDOWN_SECONDS, 24 * 60 * 60)
         self.assertEqual(updater.FAILURE_RETRY_SECONDS, 60 * 60)
-        self.assertLess(
-            updater.FAILURE_RETRY_SECONDS, updater.SUCCESS_COOLDOWN_SECONDS
-        )
+        self.assertLess(updater.FAILURE_RETRY_SECONDS, updater.SUCCESS_COOLDOWN_SECONDS)
 
     def test_trying_is_not_the_same_as_hearing_back(self):
         # A failure must not extend the 24-hour success cooldown, and a later
@@ -606,9 +601,7 @@ class SkipAndRemindTests(unittest.TestCase):
 
     def test_a_manual_check_still_reports_a_skipped_version(self):
         state = updater.record_skip({}, "1.6.0")
-        self.assertTrue(
-            updater.should_notify(info_for("1.6.0"), state, manual=True)
-        )
+        self.assertTrue(updater.should_notify(info_for("1.6.0"), state, manual=True))
 
     def test_nothing_newer_is_never_a_notification(self):
         self.assertFalse(updater.should_notify(info_for(is_newer=False), {}))

@@ -119,9 +119,7 @@ def section_for_version(text: str, version: str) -> tuple[str, str]:
 
 def source_version(source_text: str) -> str:
     """Read ``STACKCOPY_VERSION`` - the one authoritative runtime version."""
-    match = re.search(
-        r'^STACKCOPY_VERSION\s*=\s*"([^"]+)"', source_text, re.MULTILINE
-    )
+    match = re.search(r'^STACKCOPY_VERSION\s*=\s*"([^"]+)"', source_text, re.MULTILINE)
     if not match:
         raise ChangelogError("Could not find STACKCOPY_VERSION in stackcopy.py")
     return match.group(1)
@@ -163,9 +161,7 @@ def render_notes(tag: str, source_text: str, changelog_text: str) -> str:
             "will not offer it as an update.\n"
         )
 
-    changelog_link = (
-        f"https://github.com/{GITHUB_REPOSITORY}/blob/main/ChangeLog.md"
-    )
+    changelog_link = f"https://github.com/{GITHUB_REPOSITORY}/blob/main/ChangeLog.md"
     return (
         f"## Stackcopy {version}\n"
         f"{tag_note}\n"

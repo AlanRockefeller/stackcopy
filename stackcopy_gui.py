@@ -26,8 +26,19 @@ if os.environ.get("STACKCOPY_RUN_CLI") == "1":
     stackcopy.main()
     sys.exit(0)
 
-import customtkinter as ctk  # noqa: E402
-from tkinter import filedialog, messagebox  # noqa: E402
+try:
+    from tkinter import filedialog, messagebox
+
+    import customtkinter as ctk
+except ImportError as exc:
+    # Keep the dependency reporter independent of Tk/customtkinter so a broken
+    # GUI installation can explain itself instead of ending in a traceback.
+    if __name__ == "__main__":
+        from stackcopy_gui_bootstrap import show_dependency_error
+
+        show_dependency_error(exc)
+        raise SystemExit(1) from None
+    raise
 
 try:
     from stackcopy import (  # noqa: E402
@@ -688,7 +699,9 @@ class StackcopyGUI(ctk.CTk):
         message, tone, offer_download = display
         self.exiftool_var.set(message)
         self.exiftool_label.configure(
-            text_color=("#8a5a00", "#e0b050") if tone == "warn" else ("gray45", "gray62")
+            text_color=(
+                ("#8a5a00", "#e0b050") if tone == "warn" else ("gray45", "gray62")
+            )
         )
         if offer_download:
             self.exiftool_link.grid()
@@ -1033,9 +1046,7 @@ class StackcopyGUI(ctk.CTk):
             canvas.create_rectangle(
                 5, 7, 33, 31, outline=ink, width=3, tags="icon_outline"
             )
-            canvas.create_oval(
-                22, 11, 28, 17, fill=ink, outline=ink, tags="icon_fill"
-            )
+            canvas.create_oval(22, 11, 28, 17, fill=ink, outline=ink, tags="icon_fill")
             canvas.create_polygon(
                 8,
                 28,
@@ -1225,9 +1236,7 @@ class StackcopyGUI(ctk.CTk):
             if superseded:
                 self._stop_plan_process(process)
             stdout, _stderr = process.communicate()
-            payload = (
-                parse_plan_json(stdout) if process.returncode == 0 else None
-            )
+            payload = parse_plan_json(stdout) if process.returncode == 0 else None
             self._queue.put(("plan", (generation, payload)))
         except Exception:
             self._queue.put(("plan", (generation, None)))
@@ -1835,9 +1844,13 @@ class StackcopyGUI(ctk.CTk):
         self.progress.grid_remove()
         self.current_file_label.grid_remove()
         self._update_counter_cards(problems=problems)
-        show_empty = success and source_will_be_empty(
-            self._plan, leave_on_card=self.mode_var.get() == COPY_MODE
-        ) and problems == 0
+        show_empty = (
+            success
+            and source_will_be_empty(
+                self._plan, leave_on_card=self.mode_var.get() == COPY_MODE
+            )
+            and problems == 0
+        )
         if show_empty:
             self.card_empty_note.grid()
         else:

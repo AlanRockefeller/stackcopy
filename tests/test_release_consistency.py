@@ -153,9 +153,7 @@ class VersionAgreementTests(unittest.TestCase):
 
     def test_a_tag_without_a_version_number_fails(self):
         for tag in ("nightly", "v", "", "release"):
-            with self.subTest(tag=tag), self.assertRaises(
-                release_notes.ChangelogError
-            ):
+            with self.subTest(tag=tag), self.assertRaises(release_notes.ChangelogError):
                 release_notes.validate(tag, SAMPLE_SOURCE, SAMPLE_CHANGELOG)
 
     def test_a_source_without_the_constant_fails(self):
@@ -232,9 +230,7 @@ class PackagedBundleVersionTests(unittest.TestCase):
         import re as regex
         from unittest import mock as umock
 
-        source = (ROOT / "packaging" / "stackcopy_gui.spec").read_text(
-            encoding="utf-8"
-        )
+        source = (ROOT / "packaging" / "stackcopy_gui.spec").read_text(encoding="utf-8")
         block = source[
             source.index("def canonical_version():") : source.index(
                 'print(f"Stackcopy version:'
