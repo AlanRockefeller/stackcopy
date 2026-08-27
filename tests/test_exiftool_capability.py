@@ -121,6 +121,24 @@ class VersionParsingTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(stackcopy.parse_exiftool_version(text), expected)
 
+    def test_library_version_warning_is_extracted(self):
+        cases = {
+            "13.59\nWarning: Library version is 12.40": (12, 40),
+            "Warning: Library version is 12.40\n13.59\n": (12, 40),
+            "warning: library version is 12.41": (12, 41),
+            "13.59 [Warning: Library version is 12.4]": (12, 40),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(
+                    stackcopy.parse_exiftool_library_version(text), expected
+                )
+
+    def test_no_library_warning_means_none(self):
+        for text in ("13.59", "13.59\n", "", None, "Warning: something else"):
+            with self.subTest(text=text):
+                self.assertIsNone(stackcopy.parse_exiftool_library_version(text))
+
     def test_nonsense_is_rejected(self):
         for text in ("", None, "unknown", "not a version", "  ", "vNext"):
             with self.subTest(text=text):
@@ -181,6 +199,97 @@ class CapabilityStateTests(unittest.TestCase):
         # It says what actually gets worse, and never claims detection is off.
         self.assertIn("ORF", text)
         self.assertNotIn("disabled", text.lower())
+
+    def test_a_stale_library_shadowing_a_new_script_is_too_old(self):
+        # `exiftool -ver` prints 13.59 but warns its loaded Image::ExifTool is
+        # only 12.40 - the library is what parses MakerNotes, so OM SYSTEM
+        # support is not actually there.
+        info, _fake = discover(
+            FakeExifTool(
+                "13.59\n", stderr="Warning: Library version is 12.40\n"
+            )
+        )
+
+        self.assertTrue(info.available)
+        self.assertEqual(info.library_version, "12.40")
+        self.assertEqual(info.effective_om_system_version, (12, 40))
+        self.assertFalse(info.supports_om_system_makernotes)
+        self.assertEqual(info.status, stackcopy.ExifToolStatus.TOO_OLD)
+        lines = stackcopy.exiftool_status_lines(info)
+        text = " ".join(lines)
+        self.assertIn("13.59", text)
+        self.assertIn("Library version is 12.40", text)
+        self.assertIn("too old", text)
+        self.assertIn("ORF", text)
+        self.assertNotIn("disabled", text.lower())
+        payload = self.plan_payload(info)
+        self.assertEqual(payload["exiftool_status"], "too_old")
+        self.assertFalse(payload["exiftool_supports_om_system"])
+        self.assertEqual(payload["exiftool_library_version"], "12.40")
+
+    def test_the_warning_can_arrive_on_stdout_itself(self):
+        # The real-world report: `exiftool -ver` stdout is literally
+        # "13.59 [Warning: Library version is 12.40]" with nothing on stderr.
+        # Old Stackcopy printed that string verbatim; the new code must parse
+        # it, classify it as too old, and not echo the warning twice.
+        info, _fake = discover(
+            FakeExifTool("13.59 [Warning: Library version is 12.40]\n", stderr="")
+        )
+
+        self.assertEqual(info.version, "13.59")
+        self.assertEqual(info.version_tuple, (13, 59))
+        self.assertEqual(info.library_version, "12.40")
+        self.assertTrue(info.has_library_mismatch)
+        self.assertFalse(info.supports_om_system_makernotes)
+        self.assertEqual(info.status, stackcopy.ExifToolStatus.TOO_OLD)
+
+        label = stackcopy.exiftool_version_label(info) or ""
+        self.assertEqual(label, "13.59 [Warning: Library version is 12.40]")
+        self.assertEqual(label.count("Warning: Library version is"), 1)
+
+        text = " ".join(stackcopy.exiftool_status_lines(info))
+        self.assertEqual(text.count("Warning: Library version is"), 1)
+        self.assertIn("too old", text)
+
+        payload = self.plan_payload(info)
+        self.assertEqual(payload["exiftool_status"], "too_old")
+        self.assertEqual(
+            payload["exiftool_version_label"],
+            "13.59 [Warning: Library version is 12.40]",
+        )
+        self.assertEqual(payload["exiftool_library_version"], "12.40")
+        self.assertFalse(payload["exiftool_supports_om_system"])
+
+    def test_a_clean_13_59_is_unaffected_by_the_new_check(self):
+        info, _fake = discover(FakeExifTool("13.59\n", stderr=""))
+
+        self.assertIsNone(info.library_version)
+        self.assertFalse(info.has_library_mismatch)
+        self.assertTrue(info.supports_om_system_makernotes)
+        self.assertEqual(info.status, stackcopy.ExifToolStatus.OM_SYSTEM_SUPPORTED)
+        self.assertEqual(
+            stackcopy.exiftool_status_lines(info),
+            ["ExifTool 13.59 — OM System stack metadata enabled"],
+        )
+
+    def test_a_matching_library_warning_is_not_treated_as_stale(self):
+        # Some builds print the line even when the versions agree.
+        info, _fake = discover(
+            FakeExifTool(
+                "12.41\n", stderr="Warning: Library version is 12.41\n"
+            )
+        )
+
+        self.assertFalse(info.has_library_mismatch)
+        self.assertTrue(info.supports_om_system_makernotes)
+        self.assertEqual(
+            stackcopy.exiftool_status_lines(info)[0],
+            "ExifTool 12.41 — OM System stack metadata enabled",
+        )
+
+    def plan_payload(self, info):
+        with mock.patch.object(stackcopy, "exiftool_info", return_value=info):
+            return stackcopy.exiftool_plan_status()
 
     def test_missing_exiftool(self):
         info, fake = discover(which=None)
@@ -373,6 +482,75 @@ class MetadataReaderCapabilityTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertEqual(
             results["/c/a.JPG"].state, stackcopy.StackMetadataState.UNKNOWN
+        )
+
+    def test_a_stale_library_is_run_exactly_like_that_older_version(self):
+        # Policy: a script/library mismatch is treated as a real ExifTool of
+        # the library's version - so a 12.40 library is still consulted (for
+        # ordinary Olympus bodies) just as a real 12.40 would be, and the
+        # reader never disagrees with what the status line reported.
+        stale = stackcopy.ExifToolInfo(
+            "/usr/bin/exiftool",
+            "13.59",
+            (13, 59),
+            stackcopy.ExifToolSource.PATH,
+            None,
+            "12.40",
+            (12, 40),
+        )
+        self.assertFalse(stale.supports_om_system_makernotes)
+        run = mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps([{"SourceFile": "/c/a.JPG"}])
+            )
+        )
+        with (
+            mock.patch.object(stackcopy, "exiftool_info", return_value=stale),
+            mock.patch.object(stackcopy.subprocess, "run", run),
+            redirect_stdout(io.StringIO()),
+        ):
+            results = stackcopy.read_stacked_image_metadata(["/c/a.JPG"])
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            results["/c/a.JPG"].state, stackcopy.StackMetadataState.UNKNOWN
+        )
+
+    def test_a_mismatched_but_capable_library_is_supported_and_run(self):
+        # The mirror case: script 13.59, library 12.50 - the library *can*
+        # read OM SYSTEM MakerNotes, so it is both reported as enabled and
+        # actually consulted.  Status and execution agree.
+        capable = stackcopy.ExifToolInfo(
+            "/usr/bin/exiftool",
+            "13.59",
+            (13, 59),
+            stackcopy.ExifToolSource.PATH,
+            None,
+            "12.50",
+            (12, 50),
+        )
+        self.assertTrue(capable.supports_om_system_makernotes)
+        self.assertEqual(
+            capable.status, stackcopy.ExifToolStatus.OM_SYSTEM_SUPPORTED
+        )
+        run = mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [{"SourceFile": "/c/a.JPG", "StackedImage": [9, 8]}]
+                ),
+            )
+        )
+        with (
+            mock.patch.object(stackcopy, "exiftool_info", return_value=capable),
+            mock.patch.object(stackcopy.subprocess, "run", run),
+            redirect_stdout(io.StringIO()),
+        ):
+            results = stackcopy.read_stacked_image_metadata(["/c/a.JPG"])
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            results["/c/a.JPG"].state, stackcopy.StackMetadataState.FOCUS_STACK
         )
 
     def test_an_unusable_exiftool_is_not_run_at_all(self):

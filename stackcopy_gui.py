@@ -193,7 +193,7 @@ def exiftool_status_display(
     status = plan.get("exiftool_status")
     if not isinstance(status, str):
         return None
-    version = plan.get("exiftool_version")
+    version = plan.get("exiftool_version_label") or plan.get("exiftool_version")
     version_text = str(version) if isinstance(version, str) and version else "?"
     minimum = str(
         plan.get("exiftool_minimum_version") or EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT

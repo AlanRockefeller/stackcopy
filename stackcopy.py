@@ -2302,6 +2302,12 @@ class ExifToolInfo:
     version_tuple: tuple[int, int] | None
     source: ExifToolSource
     error: str | None = None
+    # When the ``exiftool`` script and the ``Image::ExifTool`` library it
+    # loads disagree, ``exiftool -ver`` prints a "Library version is X.YY"
+    # warning.  The library is what actually parses MakerNotes, so it, not the
+    # script's own version, is the real capability floor.
+    library_version: str | None = None
+    library_version_tuple: tuple[int, int] | None = None
 
     @property
     def available(self) -> bool:
@@ -2309,11 +2315,34 @@ class ExifToolInfo:
         return self.executable is not None and self.version_tuple is not None
 
     @property
+    def effective_om_system_version(self) -> tuple[int, int] | None:
+        """The version that governs OM SYSTEM MakerNote support.
+
+        That is the loaded ``Image::ExifTool`` library's version when ExifTool
+        warned it differs from the script's, otherwise the reported version.
+        """
+        if self.library_version_tuple is not None:
+            return self.library_version_tuple
+        return self.version_tuple
+
+    @property
+    def has_library_mismatch(self) -> bool:
+        """True when a "Library version is X.YY" warning was seen and the loaded
+        ``Image::ExifTool`` library version differs from the ``exiftool`` script
+        version reporting it."""
+        return (
+            self.library_version_tuple is not None
+            and self.version_tuple is not None
+            and self.library_version_tuple != self.version_tuple
+        )
+
+    @property
     def supports_om_system_makernotes(self) -> bool:
         """True when this build can read an OM-1's StackedImage tag."""
+        effective = self.effective_om_system_version
         return (
-            self.version_tuple is not None
-            and self.version_tuple >= EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION
+            effective is not None
+            and effective >= EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION
         )
 
     @property
@@ -2355,6 +2384,41 @@ def parse_exiftool_version(text: str | None) -> tuple[int, int] | None:
     return (major, int(minor_text))
 
 
+_EXIFTOOL_LIBRARY_WARNING_RE = re.compile(
+    r"Library version is\s+(\d+(?:\.\d+)?)", re.IGNORECASE
+)
+
+
+def parse_exiftool_library_version(text: str | None) -> tuple[int, int] | None:
+    """Pull the version out of ExifTool's "Library version is X.YY" warning.
+
+    ExifTool prints this when the ``Image::ExifTool`` module it loads is not
+    the one the ``exiftool`` script shipped with - a stale system-wide install
+    shadowing a newer one, most often.  Returns None when there is no such
+    warning in ``text``.
+    """
+    if not text:
+        return None
+    match = _EXIFTOOL_LIBRARY_WARNING_RE.search(text)
+    if not match:
+        return None
+    return parse_exiftool_version(match.group(1))
+
+
+def format_exiftool_version(version_tuple: tuple[int, int]) -> str:
+    """Render a parsed version back as ExifTool's two-decimal string."""
+    return f"{version_tuple[0]}.{version_tuple[1]:02d}"
+
+
+def exiftool_version_label(info: "ExifToolInfo") -> str | None:
+    """The reported version, annotated when a stale library shadows it."""
+    if info.version is None:
+        return None
+    if info.has_library_mismatch:
+        return f"{info.version} [Warning: Library version is {info.library_version}]"
+    return info.version
+
+
 def _bundled_exiftool_path() -> str | None:
     """Find the ExifTool shipped inside a packaged build, if there is one.
 
@@ -2382,8 +2446,15 @@ def _bundled_exiftool_path() -> str | None:
     return None
 
 
-def _query_exiftool_version(executable: str) -> tuple[str | None, str | None]:
-    """Run ``exiftool -ver`` once. Returns (version_text, error_text)."""
+def _query_exiftool_version(
+    executable: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Run ``exiftool -ver`` once.
+
+    Returns (version_text, error_text, notice_text) - notice_text carries any
+    warnings ExifTool printed alongside a valid version, such as the "Library
+    version is X.YY" mismatch warning.
+    """
     try:
         completed = subprocess.run(
             [executable, "-ver"],
@@ -2395,17 +2466,18 @@ def _query_exiftool_version(executable: str) -> tuple[str | None, str | None]:
             timeout=30,
         )
     except subprocess.TimeoutExpired:
-        return None, "it did not answer -ver within 30 seconds"
+        return None, "it did not answer -ver within 30 seconds", None
     except (OSError, subprocess.SubprocessError) as run_error:
-        return None, f"it could not be run ({run_error})"
+        return None, f"it could not be run ({run_error})", None
     if completed.returncode != 0:
         detail = (completed.stderr or "").strip().splitlines()
         reason = detail[0] if detail else f"exit code {completed.returncode}"
-        return None, f"-ver failed ({reason})"
+        return None, f"-ver failed ({reason})", None
     reported = (completed.stdout or "").strip()
+    notice = (completed.stderr or "").strip() or None
     if not reported:
-        return None, "-ver printed nothing"
-    return reported, None
+        return None, "-ver printed nothing", notice
+    return reported, None, notice
 
 
 def _discover_exiftool() -> ExifToolInfo:
@@ -2436,11 +2508,25 @@ def _discover_exiftool() -> ExifToolInfo:
     if executable is None:
         return ExifToolInfo(None, None, None, ExifToolSource.NONE)
 
-    reported, error = _query_exiftool_version(executable)
+    reported, error, notice = _query_exiftool_version(executable)
     parsed = parse_exiftool_version(reported)
     if parsed is None and error is None:
         error = f"-ver printed '{reported}', which is not a version number"
-    return ExifToolInfo(executable, reported, parsed, source, error)
+    # A stale Image::ExifTool library shadowing the script prints a "Library
+    # version is X.YY" warning - on stdout in some builds, stderr in others -
+    # rather than failing.  The library is what parses MakerNotes, so its
+    # version, not the script's, is the real capability floor.
+    combined_output = f"{reported or ''}\n{notice or ''}"
+    library_tuple = parse_exiftool_library_version(combined_output)
+    library_text = (
+        format_exiftool_version(library_tuple) if library_tuple is not None else None
+    )
+    # Keep the canonical "X.YY" as the stored version so a warning ExifTool
+    # appended to its own stdout is not carried around (or shown twice).
+    version_text = format_exiftool_version(parsed) if parsed is not None else reported
+    return ExifToolInfo(
+        executable, version_text, parsed, source, error, library_text, library_tuple
+    )
 
 
 # Resolved on first use and reused for the rest of the process: ExifTool is
@@ -2472,12 +2558,13 @@ def exiftool_status_lines(info: ExifToolInfo | None = None) -> list[str]:
     if info is None:
         info = exiftool_info()
     status = info.status
+    version_label = exiftool_version_label(info)
     if status is ExifToolStatus.OM_SYSTEM_SUPPORTED:
         where = " (bundled)" if info.is_bundled else ""
-        return [f"ExifTool {info.version}{where} — OM System stack metadata enabled"]
+        return [f"ExifTool {version_label}{where} — OM System stack metadata enabled"]
     if status is ExifToolStatus.TOO_OLD:
         return [
-            f"ExifTool {info.version} is too old for OM System MakerNotes.",
+            f"ExifTool {version_label} is too old for OM System MakerNotes.",
             "Using fallback detection; stacks without matching ORF files may "
             "be missed. Update ExifTool "
             f"({EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT} or newer, "
@@ -2526,6 +2613,8 @@ def exiftool_plan_status(info: ExifToolInfo | None = None) -> dict[str, Any]:
     return {
         "exiftool_status": info.status.value,
         "exiftool_version": info.version,
+        "exiftool_version_label": exiftool_version_label(info),
+        "exiftool_library_version": info.library_version,
         "exiftool_source": info.source.value,
         "exiftool_supports_om_system": info.supports_om_system_makernotes,
         "exiftool_minimum_version": EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT,
@@ -2585,9 +2674,10 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
 
     An ExifTool older than 12.41 is still worth running: it reads Olympus
     MakerNotes correctly and only the newer OM SYSTEM signature is beyond it,
-    so it is asked anyway and simply returns no tag for OM-1 files.  What the
-    capability check changes is what the user is told, not whether ExifTool
-    runs.
+    so it is asked anyway and simply returns no tag for OM-1 files.  A stale
+    ``Image::ExifTool`` library is treated as a real ExifTool of that older
+    version - same reasoning, same behaviour.  What the capability check
+    changes is what the user is told, not whether ExifTool runs.
     """
     results = {path: StackMetadata(StackMetadataState.UNKNOWN) for path in jpeg_paths}
     info = exiftool_info()
