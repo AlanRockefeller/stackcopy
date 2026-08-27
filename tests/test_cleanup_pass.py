@@ -84,7 +84,7 @@ stackcopy_gui = _load_gui_module()
 
 
 # ---------------------------------------------------------------------------
-# Finding 1 — normcase() alone is not case folding under WSL
+# Finding 1 - normcase() alone is not case folding under WSL
 # ---------------------------------------------------------------------------
 
 
@@ -276,7 +276,7 @@ class InodeZeroSameFileMoveTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 — copystat must not be able to break the durability flush
+# Finding 2 - copystat must not be able to break the durability flush
 # ---------------------------------------------------------------------------
 
 
@@ -472,7 +472,7 @@ class DirectoryFsyncErrnoClassificationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 — an ambiguous stem leaves its whole stem behind
+# Finding 3 - an ambiguous stem leaves its whole stem behind
 # ---------------------------------------------------------------------------
 
 
@@ -530,7 +530,7 @@ class AmbiguousStemFileCountTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 4 — normal, recovered and source-remains are mutually exclusive
+# Finding 4 - normal, recovered and source-remains are mutually exclusive
 # ---------------------------------------------------------------------------
 
 
@@ -673,7 +673,7 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 5 — legacy --lightroom must not call a stuck source "moved"
+# Finding 5 - legacy --lightroom must not call a stuck source "moved"
 # ---------------------------------------------------------------------------
 
 
@@ -751,7 +751,7 @@ class LegacyLightroomSourceRemainsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 6 — the adjacent-folder rule stays conservative
+# Finding 6 - the adjacent-folder rule stays conservative
 # ---------------------------------------------------------------------------
 
 

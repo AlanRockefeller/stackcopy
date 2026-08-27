@@ -201,7 +201,7 @@ def exiftool_status_display(
     if status == "om_system_supported":
         where = " (bundled)" if plan.get("exiftool_source") == "bundled" else ""
         return (
-            f"ExifTool {version_text}{where} — OM-1 stack metadata enabled",
+            f"ExifTool {version_text}{where} - OM-1 stack metadata enabled",
             "ok",
             False,
         )
@@ -216,7 +216,7 @@ def exiftool_status_display(
         )
     if status == "unusable":
         return (
-            "ExifTool could not be used — falling back to conservative stack "
+            "ExifTool could not be used - falling back to conservative stack "
             "detection, which can miss a stacked JPG whose ORF frames are not "
             f"alongside it. Install ExifTool {minimum} or newer.",
             "warn",
@@ -224,7 +224,7 @@ def exiftool_status_display(
         )
     if status == "missing":
         return (
-            "ExifTool not found — using conservative stack detection, which "
+            "ExifTool not found - using conservative stack detection, which "
             "can miss a stacked JPG whose ORF frames are not alongside it. "
             f"Install ExifTool {minimum} or newer for OM-1 camera metadata.",
             "warn",
@@ -245,6 +245,64 @@ def import_button_label(
         return "Start import"
     action = "Copy" if leave_on_card else "Move"
     return f"{action} {int(plan['total'])} files"
+
+
+def describe_other_card_files(plan: dict[str, object] | None) -> str:
+    """One-paragraph note about non-photo files sitting on the card.
+
+    Lists real data the photographer might want to keep, mentions disposable
+    camera files only in passing, and always nudges toward formatting the card
+    in the camera for a clean file structure and longer card life.
+    """
+    if not plan:
+        return ""
+    data_count = int(plan.get("other_files", 0) or 0)
+    trivial_count = int(plan.get("other_files_trivial", 0) or 0)
+    if not data_count and not trivial_count:
+        return ""
+
+    format_tip = (
+        "Tip: format the card in the camera before your next shoot - it keeps a "
+        "clean file structure and is easier on the card than deleting files."
+    )
+
+    if not data_count:
+        return (
+            f"Also on the card: {trivial_count} small "
+            f"{'file' if trivial_count == 1 else 'files'} the camera created "
+            "(catalogs, thumbnails, logs) - safe to ignore. " + format_tip
+        )
+
+    kinds = plan.get("other_file_kinds") or {}
+    if isinstance(kinds, dict) and kinds:
+        pieces = [
+            f"{count} {str(label).lstrip('.') or 'file'}"
+            for label, count in list(kinds.items())[:4]
+        ]
+        kinds_text = ", ".join(pieces)
+    else:
+        kinds_text = f"{data_count} {'file' if data_count == 1 else 'files'}"
+
+    examples = plan.get("other_file_examples") or []
+    example_text = ""
+    if isinstance(examples, list) and examples:
+        shown = ", ".join(str(name) for name in examples[:4])
+        example_text = f" ({shown}{', …' if data_count > 4 else ''})"
+
+    size_text = format_bytes(int(plan.get("other_files_bytes", 0) or 0))
+    trivial_text = ""
+    if trivial_count:
+        trivial_text = (
+            f" {trivial_count} tiny camera "
+            f"{'file' if trivial_count == 1 else 'files'} are ignored."
+        )
+
+    return (
+        f"Heads up: {kinds_text} that are not photos or videos - {size_text} - "
+        f"are also on the card{example_text}. Copy anything you want to keep off "
+        f"the card first; Stackcopy will not import these.{trivial_text} "
+        + format_tip
+    )
 
 
 def source_will_be_empty(
@@ -510,7 +568,7 @@ def volume_label(path: str) -> str | None:
 class StackcopyGUI(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(f"{APP_TITLE} — Import from card")
+        self.title(f"{APP_TITLE} - Import from card")
         self.geometry("920x860")
         self.minsize(820, 760)
         self.grid_columnconfigure(0, weight=1)
@@ -730,12 +788,23 @@ class StackcopyGUI(ctk.CTk):
             wraplength=590,
             text_color=("gray38", "gray66"),
         ).grid(row=1, column=1, sticky="ew", pady=(1, 12))
+        self.source_extra_var = ctk.StringVar(value="")
+        self.source_extra_label = ctk.CTkLabel(
+            self.source_frame,
+            textvariable=self.source_extra_var,
+            anchor="w",
+            justify="left",
+            wraplength=590,
+            text_color=("#8a5a00", "#e0b050"),
+        )
+        self.source_extra_label.grid(row=2, column=1, sticky="ew", pady=(0, 12))
+        self.source_extra_label.grid_remove()
         self.choose_source_btn = self._text_button(
             self.source_frame,
             "Choose a different folder…",
             lambda: self._browse(self.src_var, "Choose a camera card or folder"),
         )
-        self.choose_source_btn.grid(row=0, column=2, rowspan=2, padx=14)
+        self.choose_source_btn.grid(row=0, column=2, rowspan=3, padx=14)
 
     def _build_mode_section(self) -> None:
         frame = ctk.CTkFrame(self.body, fg_color="transparent")
@@ -953,7 +1022,7 @@ class StackcopyGUI(ctk.CTk):
         ctk.CTkLabel(
             self.running_controls,
             text=(
-                "Stopping is safe — files move one at a time and re-running "
+                "Stopping is safe - files move one at a time and re-running "
                 "picks up the rest."
             ),
             anchor="w",
@@ -985,7 +1054,7 @@ class StackcopyGUI(ctk.CTk):
             self.card_empty_note,
             text=(
                 "Format the card in the camera before your next shoot rather than "
-                "deleting on the computer — it keeps the folder numbering clean."
+                "deleting on the computer - it keeps the folder numbering clean."
             ),
             anchor="w",
             justify="left",
@@ -1277,6 +1346,8 @@ class StackcopyGUI(ctk.CTk):
             self._plan_slow_after = None
         if scanning:
             self.source_scan_var.set("Scanning card…")
+            self.source_extra_var.set("")
+            self.source_extra_label.grid_remove()
         self.start_btn.configure(
             state="disabled" if scanning or self._running else "normal"
         )
@@ -1293,7 +1364,7 @@ class StackcopyGUI(ctk.CTk):
         source = self.src_var.get().strip()
         label = volume_label(source)
         self.source_title_var.set(
-            f"{source} — {label}"
+            f"{source} - {label}"
             if source and label
             else (source or "Choose your camera card")
         )
@@ -1316,34 +1387,34 @@ class StackcopyGUI(ctk.CTk):
             if plan
             else ""
         )
-        generic_output = "Finished stacked photos — renamed with ‘stacked’ added"
+        generic_output = "Finished stacked photos - renamed with ‘stacked’ added"
         generic_output += " to the name"
         self.plan_headline_vars["stack_output"].set(
             (
-                f"{output_count} finished stacked photos — renamed {example}"
+                f"{output_count} finished stacked photos - renamed {example}"
                 if output_count is not None
                 else generic_output
             )
         )
         self.plan_headline_vars["stack_input"].set(
             (
-                f"{input_count} frames that fed those stacks — kept in case you want "
+                f"{input_count} frames that fed those stacks - kept in case you want "
                 "to stack the RAWs yourself"
                 if input_count is not None
                 else (
-                    "Frames that fed those stacks — kept in case you want to "
+                    "Frames that fed those stacks - kept in case you want to "
                     "stack the RAWs yourself"
                 )
             )
         )
         self.plan_headline_vars["other"].set(
             (
-                f"{other_count} single shots and videos — names untouched, dated "
+                f"{other_count} single shots and videos - names untouched, dated "
                 "folders "
                 "as Lightroom would make them"
                 if other_count is not None
                 else (
-                    "Single shots and videos — names untouched, dated folders as "
+                    "Single shots and videos - names untouched, dated folders as "
                     "Lightroom would make them"
                 )
             )
@@ -1378,9 +1449,23 @@ class StackcopyGUI(ctk.CTk):
             noun = "photo or video" if total == 1 else "photos and videos"
             text = f"{total} {noun}, {format_bytes(int(payload['bytes']))}"
             if subdirs:
-                text += " — scanned including " + ", ".join(subdirs)
+                text += " - scanned including " + ", ".join(subdirs)
             self.source_scan_var.set(text)
+        self._update_other_files_note(payload)
         self._refresh_idle_plan()
+
+    def _update_other_files_note(self, payload: dict[str, object] | None) -> None:
+        note = describe_other_card_files(payload)
+        if not note:
+            self.source_extra_var.set("")
+            self.source_extra_label.grid_remove()
+            return
+        has_data = bool(payload and int(payload.get("other_files", 0) or 0))
+        self.source_extra_label.configure(
+            text_color=("#8a5a00", "#e0b050") if has_data else ("gray38", "gray66")
+        )
+        self.source_extra_var.set(note)
+        self.source_extra_label.grid()
 
     # -- disclosures -----------------------------------------------------
 
@@ -1686,7 +1771,7 @@ class StackcopyGUI(ctk.CTk):
             detail = "a video"
         else:
             detail = "a single photo"
-        return f"{action} {filename} — {detail}."
+        return f"{action} {filename} - {detail}."
 
     def _update_meta(self) -> None:
         if not self._total:
@@ -1750,7 +1835,7 @@ class StackcopyGUI(ctk.CTk):
                 self._launch()
             else:
                 self._show_result(
-                    "Import stopped — low disk space",
+                    "Import stopped - low disk space",
                     "No new file was started after the space check. Free some "
                     "space and try again.",
                     problems=0,
@@ -1774,7 +1859,7 @@ class StackcopyGUI(ctk.CTk):
             )
         elif returncode == 0 and preview:
             self._show_result(
-                "Preview complete — nothing was moved",
+                "Preview complete - nothing was moved",
                 f"{self._total} files are ready to import when you are.",
                 problems=0,
                 allow_open=False,
@@ -1810,14 +1895,14 @@ class StackcopyGUI(ctk.CTk):
         """Keep the plan visible and explicit when the scan finds no media."""
         self.plan_heading_var.set("Where these 0 files will land")
         self.plan_headline_vars["stack_output"].set(
-            "0 finished stacked photos — renamed with ‘stacked’ added to the name"
+            "0 finished stacked photos - renamed with ‘stacked’ added to the name"
         )
         self.plan_headline_vars["stack_input"].set(
-            "0 frames that fed those stacks — kept in case you want to stack "
+            "0 frames that fed those stacks - kept in case you want to stack "
             "the RAWs yourself"
         )
         self.plan_headline_vars["other"].set(
-            "0 single shots and videos — names untouched, dated folders as "
+            "0 single shots and videos - names untouched, dated folders as "
             "Lightroom would make them"
         )
 
@@ -2020,7 +2105,7 @@ class StackcopyGUI(ctk.CTk):
             stackcopy_updater.record_failure(self._state)
             self._save_current_defaults()
             if manual:
-                self._set_update_notice(f"Could not check for updates — {error}")
+                self._set_update_notice(f"Could not check for updates - {error}")
                 messagebox.showwarning(
                     APP_NAME,
                     f"Stackcopy could not check for updates.\n\n{error}\n\n"
@@ -2057,7 +2142,7 @@ class StackcopyGUI(ctk.CTk):
 
     def _notify_update(self, info) -> None:
         self._update_info = info
-        self._set_update_notice(f"{info.headline} — you have {info.current_version}.")
+        self._set_update_notice(f"{info.headline} - you have {info.current_version}.")
         self.update_label.configure(text_color=("#1f6aa5", "#5aa7df"))
         self.update_view_btn.grid()
         self.update_dismiss_btn.grid()

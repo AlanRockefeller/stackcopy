@@ -7,6 +7,7 @@
 - **ExifTool is now included with the Windows app**, so current OM System stack detection works without installing anything extra. macOS and source installations clearly report when ExifTool is missing or too old.
 - **Added update notifications to the GUI.** Stackcopy can tell you when a newer version is available, with options to skip it or be reminded later. It doesn't download or install updates automatically.
 - **Improved support for camera-card contents.** Olympus/OM `.ORI` files are preserved correctly, unrecognized files are clearly reported and left on the card, and conflicting files such as an `.ORF` and `.DNG` with the same name are left untouched rather than guessed at.
+- **The GUI now flags non-photo files on the card.** Alongside the photo and video count, Stackcopy lists other files it found and won't import (documents, archives, audio, and the like), so you can copy anything you want to keep before formatting. Tiny camera-generated files such as folder catalogs, print marks, and thumbnails are ignored, and Stackcopy suggests formatting the card in the camera for a clean file structure and longer card life.
 - **Made file moves and overwrites substantially safer.** Stackcopy now protects against destination files changing during an import, accidental same-file operations, case-only path differences, and other edge cases that could previously overwrite or remove the wrong file. When safety cannot be verified, it keeps the source instead.
 - **Made cross-drive/card moves safer.** Stackcopy verifies that a copied file is safely written before deleting the original, and no longer reports a move as successful when the destination was copied but the source could not be removed.
 - **Improved interrupted and partially failed imports.** Ctrl-C stops cleanly, completed work is preserved, re-running is safe, and recovered files or other incomplete outcomes are clearly distinguished from a fully successful import.
@@ -73,7 +74,7 @@
 - The summary now reports accepted and rejected stack counts, file counts by category, time range, and destination directories.
 - Rejection breakdown available with `--debug-stacks`.
 
-## **[1.5.2] — 2026-01-31**
+## **[1.5.2] - 2026-01-31**
 
 ### Added
 
@@ -90,13 +91,13 @@
 
 - If disk space is low and the process is running without an interactive TTY, stackcopy now **refuses to proceed** rather than risking partial transfers.
 
-## **[1.5.1] — 2026-01-26**
+## **[1.5.1] - 2026-01-26**
 
 - Added collision-safe naming for Lightroom/Lightroom Import moves: if a destination filename already exists, Stackcopy appends a shared `__N` suffix (keeps JPG+RAW paired) instead of overwriting.
 - Always prints a brief notice when a rename happens due to a destination collision (even without `--verbose`), usually caused by camera/card counter resets.
 - Improved “remaining files” handling by grouping moves per destination folder and keeping in-memory paths/basenames consistent after moves.
 
-## **[1.5] — 2026-01-19**
+## **[1.5] - 2026-01-19**
 
 - **Dynamic Stack Detection**:
   - Implemented dual-threshold logic:
@@ -111,7 +112,7 @@
 - **Thread Safety**:
   - Refactored parallel move execution to be fully thread-safe and race-free.
 
-## **[1.4] — 2026-01-04**
+## **[1.4] - 2026-01-04**
 
 - Atomic File Operations (\_atomic_copy2 function)
 
@@ -137,7 +138,7 @@ Provides detailed diagnostic output showing why stacks are accepted or rejected
 Shows timestamp gaps, sequence matching, and safety check results
 Very helpful for troubleshooting stack detection issues
 
-## **[1.3] — 2025-11-22**
+## **[1.3] - 2025-11-22**
 
 ### **Added**
 
@@ -175,7 +176,7 @@ Very helpful for troubleshooting stack detection issues
 The --lightroom mode includes a safety check to skip moving input files when it detects a focus-bracketing burst longer than 15 frames. This check was incorrectly comparing the stacked output file's timestamp against raw files from a previous, unrelated stack. When two separate stacks were shot within 20 seconds of each other, the script would mistakenly conclude they were part of one giant burst and skip moving the input files for the second stack.
 The fix changes the burst detection to compare timestamps between consecutive raw files rather than between the output and earlier raw files. This correctly identifies actual continuous bursts while allowing separate stacks shot in quick succession to be processed independently.
 
-## **[1.1] — 2025-10-30**
+## **[1.1] - 2025-10-30**
 
 ### Added
 

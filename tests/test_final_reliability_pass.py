@@ -106,7 +106,7 @@ def make_pair(source: Path, stem: str, when: datetime, extensions=("JPG", "ORF")
 
 
 # ---------------------------------------------------------------------------
-# Finding 1 — a --force overwrite is never silent
+# Finding 1 - a --force overwrite is never silent
 # ---------------------------------------------------------------------------
 
 
@@ -317,7 +317,7 @@ class ForcedOverwriteVisibilityTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 — duplicate stem + logical file type
+# Finding 2 - duplicate stem + logical file type
 # ---------------------------------------------------------------------------
 
 
@@ -459,7 +459,7 @@ class DuplicateLogicalTypeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 — durability barrier before deleting a cross-device source
+# Finding 3 - durability barrier before deleting a cross-device source
 # ---------------------------------------------------------------------------
 
 
@@ -675,7 +675,7 @@ class CrossDeviceDurabilityTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 4 — one bad file must not discard a whole ExifTool batch
+# Finding 4 - one bad file must not discard a whole ExifTool batch
 # ---------------------------------------------------------------------------
 
 
@@ -805,7 +805,7 @@ class ExifToolPartialBatchTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 5 — adjacent-folder provenance
+# Finding 5 - adjacent-folder provenance
 # ---------------------------------------------------------------------------
 
 
@@ -1087,7 +1087,7 @@ class AdjacentFolderProvenanceTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 6 — recovery is a degraded outcome
+# Finding 6 - recovery is a degraded outcome
 # ---------------------------------------------------------------------------
 
 
@@ -1173,7 +1173,7 @@ class RecoveryIsDegradedTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 7 — copied, but the source could not be removed
+# Finding 7 - copied, but the source could not be removed
 # ---------------------------------------------------------------------------
 
 
@@ -1431,7 +1431,7 @@ class CopiedSourceRemainsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 8 — source inside a destination tree
+# Finding 8 - source inside a destination tree
 # ---------------------------------------------------------------------------
 
 
@@ -1577,7 +1577,7 @@ class SourceInsideDestinationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 9 — st_ino == 0
+# Finding 9 - st_ino == 0
 # ---------------------------------------------------------------------------
 
 
@@ -1677,7 +1677,7 @@ class ZeroInodeIdentityTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 10 — companion files share one date folder
+# Finding 10 - companion files share one date folder
 # ---------------------------------------------------------------------------
 
 
@@ -1795,7 +1795,7 @@ class CompanionDateConsistencyTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Finding 11 — --prefix validation
+# Finding 11 - --prefix validation
 # ---------------------------------------------------------------------------
 
 

@@ -173,7 +173,7 @@ class CapabilityStateTests(unittest.TestCase):
         self.assertEqual(info.version_tuple, (13, 59))
         self.assertEqual(
             stackcopy.exiftool_status_lines(info),
-            ["ExifTool 13.59 — OM System stack metadata enabled"],
+            ["ExifTool 13.59 - OM System stack metadata enabled"],
         )
 
     def test_exiftool_12_41_is_exactly_enough(self):
@@ -269,7 +269,7 @@ class CapabilityStateTests(unittest.TestCase):
         self.assertEqual(info.status, stackcopy.ExifToolStatus.OM_SYSTEM_SUPPORTED)
         self.assertEqual(
             stackcopy.exiftool_status_lines(info),
-            ["ExifTool 13.59 — OM System stack metadata enabled"],
+            ["ExifTool 13.59 - OM System stack metadata enabled"],
         )
 
     def test_a_matching_library_warning_is_not_treated_as_stale(self):
@@ -284,7 +284,7 @@ class CapabilityStateTests(unittest.TestCase):
         self.assertTrue(info.supports_om_system_makernotes)
         self.assertEqual(
             stackcopy.exiftool_status_lines(info)[0],
-            "ExifTool 12.41 — OM System stack metadata enabled",
+            "ExifTool 12.41 - OM System stack metadata enabled",
         )
 
     def plan_payload(self, info):
