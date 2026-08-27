@@ -84,6 +84,34 @@ class PlanParserTests(unittest.TestCase):
         self.assertIsNone(gui.parse_plan_json(json.dumps(plan_payload(bytes=-1))))
 
 
+class OtherCardFilesTests(unittest.TestCase):
+    def test_no_note_when_card_holds_only_media(self):
+        self.assertEqual(gui.describe_other_card_files(plan_payload()), "")
+        self.assertEqual(gui.describe_other_card_files(None), "")
+
+    def test_trivial_only_is_a_gentle_ignore_message(self):
+        note = gui.describe_other_card_files(
+            plan_payload(other_files=0, other_files_trivial=4)
+        )
+        self.assertIn("safe to ignore", note)
+        self.assertIn("format the card in the camera", note)
+
+    def test_real_data_triggers_a_keep_warning(self):
+        note = gui.describe_other_card_files(
+            plan_payload(
+                other_files=2,
+                other_files_bytes=5_000_000,
+                other_files_trivial=3,
+                other_file_kinds={".TXT": 1, ".PDF": 1},
+                other_file_examples=["notes.txt", "invoice.pdf"],
+            )
+        )
+        self.assertIn("not photos or videos", note)
+        self.assertIn("notes.txt", note)
+        self.assertIn("Copy anything you want to keep", note)
+        self.assertIn("format the card in the camera", note)
+
+
 class ProgressParserTests(unittest.TestCase):
     def test_role_and_stack_output_name_survive_spaces(self):
         fields, filename = gui.parse_progress(

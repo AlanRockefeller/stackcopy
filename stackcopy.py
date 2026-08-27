@@ -233,9 +233,9 @@ def _lightroom_import_base_dir() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Default paths — override with environment variables if needed:
-#   STACKCOPY_STACK_INPUT_DIR       — where stack input photos go
-#   STACKCOPY_LIGHTROOM_IMPORT_DIR  — where stacked outputs and remaining files go
+# Default paths - override with environment variables if needed:
+#   STACKCOPY_STACK_INPUT_DIR       - where stack input photos go
+#   STACKCOPY_LIGHTROOM_IMPORT_DIR  - where stacked outputs and remaining files go
 # ---------------------------------------------------------------------------
 
 _env_stack_input = os.environ.get("STACKCOPY_STACK_INPUT_DIR")
@@ -483,6 +483,73 @@ _CARD_HOUSEKEEPING_FILES = {
 _CARD_HOUSEKEEPING_PATHS = {
     ("misc", "autprint.mrk"),
 }
+
+# Small files a camera or card reader drops on its own: folder catalogs, print
+# marks, clip-info sidecars, thumbnails, index and log files, OS metadata.  When
+# one of these is tiny it is treated as disposable and never counted as "real
+# data" the photographer might want to keep before formatting the card.
+_CAMERA_JUNK_EXTENSIONS = {
+    ".ctg",  # Canon folder catalog
+    ".mrk",  # Olympus/OM print-order mark
+    ".mrf",
+    ".dat",
+    ".idx",
+    ".ind",  # Sony index
+    ".bin",
+    ".log",
+    ".tmp",
+    ".sdd",
+    ".acdb",
+    ".modd",  # Sony clip metadata
+    ".moff",
+    ".thm",  # video thumbnail
+    ".xml",  # camera clip-info sidecars (small)
+}
+_CAMERA_JUNK_NAMES = {
+    ".ds_store",
+    "desktop.ini",
+    "thumbs.db",
+}
+# Documents, archives and sidecars a photographer might deliberately keep on a
+# card.  These count as real data no matter how small they are.
+_OTHER_DATA_EXTENSIONS = {
+    ".txt", ".rtf", ".doc", ".docx", ".pdf", ".odt", ".pages",
+    ".csv", ".xlsx", ".numbers", ".key", ".ppt", ".pptx",
+    ".zip", ".rar", ".7z", ".tar", ".gz",
+    ".gpx", ".kml", ".fit", ".tcx",
+    ".wav", ".mp3", ".m4a", ".aac", ".flac", ".aif", ".aiff",
+    ".psd", ".tif", ".tiff", ".png", ".gif", ".bmp", ".heic", ".heif", ".webp",
+    ".xmp", ".lrcat", ".dop", ".cos", ".pp3",
+}
+
+# A genuine photo or video is far larger than this; anything smaller with an
+# unrecognized extension is assumed to be camera/card housekeeping.
+TRIVIAL_OTHER_FILE_BYTES = 1024 * 1024
+
+
+def classify_other_source_file(name: str, ext_lower: str, size: int) -> str:
+    """Bucket a non-media source file as ``"data"`` or ``"trivial"``.
+
+    ``"trivial"`` means known camera/OS housekeeping or something too small to
+    be real photo/video data.  ``"data"`` means a file the photographer might
+    not want to lose when they format the card.
+    """
+    lowered = name.casefold()
+    # Known housekeeping filenames are trivial no matter their size.
+    if lowered in _CAMERA_JUNK_NAMES or lowered in _CARD_HOUSEKEEPING_FILES:
+        return "trivial"
+    # A recognized data extension is always worth preserving, even when the
+    # name starts with a dot (e.g. ``.shotlist.txt``, ``.settings.xmp``).
+    if ext_lower in _OTHER_DATA_EXTENSIONS:
+        return "data"
+    # Camera-junk extensions are only disposable while the file stays small;
+    # a large ``.bin``/``.xml``/``.log`` is treated as data the user may keep.
+    if ext_lower in _CAMERA_JUNK_EXTENSIONS:
+        return "trivial" if size <= TRIVIAL_OTHER_FILE_BYTES else "data"
+    # Any other small file, including a generic hidden dotfile, is housekeeping.
+    if size <= TRIVIAL_OTHER_FILE_BYTES:
+        return "trivial"
+    return "data"
 
 
 def card_would_be_empty_after(source_dir: str, removed_paths=()) -> bool:
@@ -1134,7 +1201,7 @@ class DirectorySync(Enum):
     # mounts, CIFS, WSL's 9P bridge).  The file contents are already flushed,
     # which is as durable as this platform gets, so a move may still complete.
     UNSUPPORTED = "unsupported"
-    # A real I/O error on a filesystem that does support it — the destination
+    # A real I/O error on a filesystem that does support it - the destination
     # filesystem is in trouble, so the source must be kept.
     FAILED = "failed"
 
@@ -2561,7 +2628,7 @@ def exiftool_status_lines(info: ExifToolInfo | None = None) -> list[str]:
     version_label = exiftool_version_label(info)
     if status is ExifToolStatus.OM_SYSTEM_SUPPORTED:
         where = " (bundled)" if info.is_bundled else ""
-        return [f"ExifTool {version_label}{where} — OM System stack metadata enabled"]
+        return [f"ExifTool {version_label}{where} - OM System stack metadata enabled"]
     if status is ExifToolStatus.TOO_OLD:
         return [
             f"ExifTool {version_label} is too old for OM System MakerNotes.",
@@ -2578,7 +2645,7 @@ def exiftool_status_lines(info: ExifToolInfo | None = None) -> list[str]:
             "files are absent.",
         ]
     return [
-        "ExifTool not found — using fallback stack detection.",
+        "ExifTool not found - using fallback stack detection.",
         "Stacks may be missed if their ORF files are absent.",
         f"Install ExifTool {EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT} or newer "
         "for OM System camera metadata.",
@@ -3212,7 +3279,7 @@ def main():
             print(f"Error creating stacked directory '{dest_dir}': {e}")
             sys.exit(1)
 
-    # WSL performance warning — fires once if any involved path crosses the 9P bridge
+    # WSL performance warning - fires once if any involved path crosses the 9P bridge
     wsl_check_paths = [src_dir, dest_dir]
     if operation_mode in ("lightroom", "lightroomimport"):
         wsl_check_paths.append(STACK_INPUT_DIR)
@@ -3291,6 +3358,7 @@ def main():
         )
     file_db = {}
     unrecognized_extensions: dict[str, int] = defaultdict(int)
+    other_source_files: list[dict[str, Any]] = []
     scanned_source_subdirs: set[str] = set()
     try:
         for entry in iter_source_file_entries(
@@ -3309,6 +3377,32 @@ def main():
             else:
                 extension_label = ext.upper() if ext else "(no extension)"
                 unrecognized_extensions[extension_label] += 1
+                try:
+                    other_size = entry.stat(follow_symlinks=False).st_size
+                    other_size_known = True
+                except OSError:
+                    # The size can't be read.  Fail closed: treat the file as
+                    # data worth preserving rather than tiny/disposable.
+                    other_size = 0
+                    other_size_known = False
+                other_source_files.append(
+                    {
+                        "name": entry.name,
+                        "reldir": os.path.relpath(
+                            os.path.dirname(entry.path), src_dir
+                        ),
+                        "ext": ext_lower,
+                        "label": extension_label,
+                        "size": other_size,
+                        "kind": (
+                            classify_other_source_file(
+                                entry.name, ext_lower, other_size
+                            )
+                            if other_size_known
+                            else "data"
+                        ),
+                    }
+                )
                 continue
 
             relative_dir = os.path.relpath(os.path.dirname(entry.path), src_dir)
@@ -4521,6 +4615,23 @@ def main():
                 for move in planned_moves
                 if move.category == "remaining" and move.file_type == "video"
             )
+            data_others = [f for f in other_source_files if f["kind"] == "data"]
+            trivial_others = [
+                f for f in other_source_files if f["kind"] == "trivial"
+            ]
+            other_kind_counts: dict[str, int] = defaultdict(int)
+            for other in data_others:
+                other_kind_counts[other["label"]] += 1
+            other_files_payload = {
+                "other_files": len(data_others),
+                "other_files_bytes": sum(f["size"] for f in data_others),
+                "other_files_trivial": len(trivial_others),
+                "other_file_kinds": dict(
+                    sorted(other_kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                ),
+                "other_file_examples": [f["name"] for f in data_others[:6]],
+            }
+
             planned_sources = [move.src_path for move in planned_moves]
             would_be_empty = card_would_be_empty_after(src_dir, planned_sources)
             if args.leave_on_card and planned_sources:
@@ -4542,6 +4653,7 @@ def main():
                 "source_is_removable": source_is_removable(src_dir),
                 "source_would_be_empty_after": would_be_empty,
             }
+            payload.update(other_files_payload)
             if not args.no_stack_detection:
                 payload.update(exiftool_plan_status())
             output_example = next(
