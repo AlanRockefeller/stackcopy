@@ -82,11 +82,16 @@ def verify(archive: Path) -> None:
     print(f"Verified SHA-256 {actual}")
 
 
+def payload_is_complete(path: Path) -> bool:
+    """Return whether the required Windows ExifTool payload is present."""
+    return (path / "exiftool.exe").is_file() and (path / SUPPORT_DIRECTORY).is_dir()
+
+
 def extract(archive: Path, target: Path) -> None:
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
-    with tempfile.TemporaryDirectory() as staging_name:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{target.name}-", dir=target.parent
+    ) as staging_name:
         staging = Path(staging_name)
         with zipfile.ZipFile(archive) as bundle:
             for entry in bundle.namelist():
@@ -100,16 +105,23 @@ def extract(archive: Path, target: Path) -> None:
         support = root / SUPPORT_DIRECTORY
         if not executable.is_file() or not support.is_dir():
             raise RuntimeError(
-                f"{archive.name} does not have the expected " f"{ARCHIVE_ROOT}/ layout"
+                f"{archive.name} does not have the expected {ARCHIVE_ROOT}/ layout"
             )
-        shutil.copy2(executable, target / "exiftool.exe")
-        shutil.copytree(support, target / SUPPORT_DIRECTORY)
+        prepared = staging / "prepared"
+        prepared.mkdir()
+        shutil.copy2(executable, prepared / "exiftool.exe")
+        shutil.copytree(support, prepared / SUPPORT_DIRECTORY)
         # ExifTool is redistributed under the same terms as Perl (GPL or the
         # Artistic License); its licence and readme travel with the binary.
         for extra in ("README.txt",):
             source = root / extra
             if source.is_file():
-                shutil.copy2(source, target / extra)
+                shutil.copy2(source, prepared / extra)
+        if not payload_is_complete(prepared):
+            raise RuntimeError("prepared ExifTool payload is incomplete")
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(prepared, target)
     print(f"Bundled ExifTool {EXIFTOOL_VERSION} into {target}")
 
 
@@ -138,7 +150,7 @@ def main() -> int:
         )
         return 0
 
-    if (VENDOR_DIR / "exiftool.exe").is_file() and not args.force:
+    if payload_is_complete(VENDOR_DIR) and not args.force:
         print(f"ExifTool already present in {VENDOR_DIR}")
         return 0
 

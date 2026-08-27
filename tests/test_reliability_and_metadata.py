@@ -659,6 +659,58 @@ class MetadataStackIntegrationTests(unittest.TestCase):
             self.assertEqual(len(files_under(stack_input)), 20)
             self.assertNotIn("20-frame input cap", output)
 
+    def test_undatable_confirmed_output_leaves_the_whole_stack_on_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "card"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+            output_name, _base = self.make_stack(source, 3)
+            write_file(
+                source / Path(output_name).with_suffix(".ORI"),
+                b"output companion",
+                datetime(2026, 8, 24, 12),
+            )
+            metadata = {
+                output_name: stackcopy.StackMetadata(
+                    stackcopy.StackMetadataState.FOCUS_STACK, 3, "9 3"
+                )
+            }
+            original_get_file_mtime = stackcopy.get_file_mtime
+
+            def get_file_mtime(record, verbose=False):
+                if Path(record["path"]).name == output_name:
+                    return None
+                return original_get_file_mtime(record, verbose)
+
+            code, output = run_main(
+                ["--lightroomimport", str(source), "--date", "2026-08-24"],
+                lightroom=lightroom,
+                stack_input=stack_input,
+                metadata=metadata,
+                extra_contexts=(
+                    mock.patch.object(
+                        stackcopy, "get_file_mtime", side_effect=get_file_mtime
+                    ),
+                ),
+            )
+
+            self.assertEqual(code, 0, output)
+            self.assertIn("whole stack will be left on the source", output)
+            self.assertIn("Accepted stacks:               0", output)
+            self.assertEqual(files_under(lightroom), {})
+            self.assertEqual(files_under(stack_input), {})
+            self.assertEqual(
+                {path.name for path in files_under(source)},
+                {
+                    "P8080001.JPG",
+                    "P8080002.JPG",
+                    "P8080003.JPG",
+                    output_name,
+                    Path(output_name).with_suffix(".ORI").name,
+                },
+            )
+
     def test_metadata_signal_is_consistent_in_lightroom_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1152,10 +1204,6 @@ class ScanPromptAndTimestampTests(unittest.TestCase):
             result = stackcopy.get_file_mtime(record, verbose=True)
         self.assertIsNone(result)
         self.assertIn("Could not determine timestamp", output.getvalue())
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 def make_heuristic_stack(
@@ -1834,3 +1882,7 @@ class DestinationNameExhaustionTests(unittest.TestCase):
             {path.name for path in files_under(source)},
             {"P8080001.JPG", "P8080001.ORF"},
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

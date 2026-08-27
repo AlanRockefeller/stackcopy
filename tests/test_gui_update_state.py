@@ -356,6 +356,7 @@ class StartupBehaviourTests(unittest.TestCase):
     def test_the_updater_is_standard_library_only(self):
         allowed = {
             "__future__",
+            "http",
             "json",
             "re",
             "urllib",

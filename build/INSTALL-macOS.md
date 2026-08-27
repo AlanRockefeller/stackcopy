@@ -139,4 +139,4 @@ Stackcopy needs **ExifTool 12.41 or newer** — that is the release that learned
 to read OM SYSTEM camera metadata. Restart Stackcopy afterwards; the line near
 the top of the window should then say:
 
-    ExifTool 13.59 — OM-1 stack metadata enabled
+    ExifTool <version> — OM-1 stack metadata enabled

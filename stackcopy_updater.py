@@ -15,6 +15,7 @@ a display and without a network.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.error
@@ -263,6 +264,8 @@ def fetch_latest_release(
         raise UpdateCheckError(f"Could not reach GitHub: {reason}") from exc
     except TimeoutError as exc:
         raise UpdateCheckError("The update check timed out") from exc
+    except http.client.HTTPException as exc:
+        raise UpdateCheckError("Could not read GitHub's HTTP response") from exc
     except OSError as exc:
         raise UpdateCheckError(f"Could not reach GitHub: {exc}") from exc
 

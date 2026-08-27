@@ -273,3 +273,19 @@ class PackagedBundleVersionTests(unittest.TestCase):
         version = stackcopy.STACKCOPY_VERSION
         self.assertEqual(updater.normalize_version(f"v{version}-build9"), version)
         self.assertEqual(self.spec_version(f"v{version}-build9"), version)
+
+
+class ReleaseWorkflowSafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = (ROOT / ".github" / "workflows" / "build-gui.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_release_tag_is_not_interpolated_directly_into_shell(self):
+        self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", self.workflow)
+        self.assertEqual(self.workflow.count('--tag "$RELEASE_TAG"'), 2)
+        self.assertNotIn('--tag "${{ github.ref_name }}"', self.workflow)
+
+    def test_validation_and_release_use_the_same_version_tag_gate(self):
+        gate = "if: startsWith(github.ref, 'refs/tags/v')"
+        self.assertEqual(self.workflow.count(gate), 2)

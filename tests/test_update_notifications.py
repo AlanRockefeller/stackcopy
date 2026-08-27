@@ -8,6 +8,7 @@ Nothing here touches the network: every check is driven through an injected
 opener, so the suite is offline-safe and deterministic.
 """
 
+import http.client
 import io
 import json
 import sys
@@ -399,6 +400,21 @@ class UpdateCheckTests(unittest.TestCase):
             updater.check_for_update(
                 "1.5.9", opener=failing_opener(ConnectionResetError("reset"))
             )
+
+    def test_an_incomplete_http_body_is_normalized_and_chained(self):
+        error = http.client.IncompleteRead(b'{"tag_name":', 10)
+
+        class IncompleteResponse(FakeResponse):
+            def read(self, *args, **kwargs):
+                raise error
+
+        with self.assertRaises(updater.UpdateCheckError) as caught:
+            updater.fetch_latest_release(
+                opener=lambda _request, timeout=None: IncompleteResponse(b"")
+            )
+
+        self.assertIn("HTTP response", str(caught.exception))
+        self.assertIs(caught.exception.__cause__, error)
 
     # --- prereleases and odd but legal payloads ---
 

@@ -18,7 +18,14 @@ def dependency_error_message(error: ImportError) -> str:
     missing = getattr(error, "name", None) or "an unknown GUI module"
     detail = f"Missing module: {missing}"
 
-    if missing == "tkinter" or missing.startswith("tkinter."):
+    if getattr(sys, "frozen", False):
+        return (
+            "Stackcopy cannot start because its packaged GUI libraries are missing "
+            "or damaged.\n\n"
+            f"{detail}\n\nReinstall Stackcopy from a complete release download."
+        )
+
+    if missing == "_tkinter" or missing == "tkinter" or missing.startswith("tkinter."):
         if sys.platform == "darwin":
             fix = (
                 "Install a Python build with Tk support. If you use Homebrew, run:\n\n"
@@ -39,13 +46,6 @@ def dependency_error_message(error: ImportError) -> str:
         return (
             "Stackcopy cannot start because Python's Tk GUI support is not installed.\n\n"
             f"{detail}\n\n{fix}\n\nThen start Stackcopy again."
-        )
-
-    if getattr(sys, "frozen", False):
-        return (
-            "Stackcopy cannot start because its packaged GUI libraries are missing "
-            "or damaged.\n\n"
-            f"{detail}\n\nReinstall Stackcopy from a complete release download."
         )
 
     requirements = Path(__file__).resolve().with_name("requirements-gui.txt")

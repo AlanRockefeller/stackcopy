@@ -35,6 +35,27 @@ class DependencyMessageTests(unittest.TestCase):
         self.assertIn("sudo apt install python3-tk", message)
         self.assertIn("sudo dnf install python3-tkinter", message)
 
+    def test_missing_low_level_tk_binding_gets_tk_instructions(self):
+        error = ModuleNotFoundError("No module named '_tkinter'", name="_tkinter")
+        with mock.patch.object(bootstrap.sys, "platform", "linux"), mock.patch.object(
+            bootstrap.os, "name", "posix"
+        ):
+            message = bootstrap.dependency_error_message(error)
+
+        self.assertIn("Python's Tk GUI support", message)
+        self.assertIn("sudo apt install python3-tk", message)
+        self.assertNotIn("requirements-gui.txt", message)
+
+    def test_frozen_tk_failure_gets_packaged_runtime_guidance(self):
+        error = ModuleNotFoundError("No module named 'tkinter'", name="tkinter")
+        with mock.patch.object(bootstrap.sys, "frozen", True, create=True):
+            message = bootstrap.dependency_error_message(error)
+
+        self.assertIn("packaged GUI libraries", message)
+        self.assertIn("Reinstall Stackcopy", message)
+        self.assertNotIn("python3-tk", message)
+        self.assertNotIn("requirements-gui.txt", message)
+
 
 class DependencyDialogTests(unittest.TestCase):
     def test_standard_tk_dialog_is_used_without_customtkinter(self):

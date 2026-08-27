@@ -19,6 +19,8 @@ jobs:
   validate:
     name: Validate version and changelog
     if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,12 +38,12 @@ jobs:
       # same application version. A build-only tag (v1.6.0-build2) validates
       # against the v1.6.0 entry, which is the point: it is the same release.
       - name: Check tag, STACKCOPY_VERSION and ChangeLog.md agree
-        run: python packaging/release_notes.py --check --tag "${{ github.ref_name }}"
+        run: python packaging/release_notes.py --check --tag "$RELEASE_TAG"
 
       - name: Build release notes from ChangeLog.md
         run: |
           python packaging/release_notes.py \
-            --tag "${{ github.ref_name }}" --output release-notes.md
+            --tag "$RELEASE_TAG" --output release-notes.md
           echo "--- release notes ---"
           cat release-notes.md
 
@@ -133,7 +135,7 @@ jobs:
   release:
     name: Attach to release
     needs: [validate, build]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -475,49 +475,51 @@ def path_is_within(path: str, root: str) -> bool:
         return False
 
 
-_CARD_HOUSEKEEPING_DIRS = {
-    ".spotlight-v100",
-    ".trashes",
-    "lost.dir",
-    "misc",
-    "private",
-    "system volume information",
-}
 _CARD_HOUSEKEEPING_FILES = {
     ".ds_store",
     "desktop.ini",
     "thumbs.db",
+}
+_CARD_HOUSEKEEPING_PATHS = {
+    ("misc", "autprint.mrk"),
 }
 
 
 def card_would_be_empty_after(source_dir: str, removed_paths=()) -> bool:
     """Return whether only ignorable camera/card housekeeping would remain.
 
-    Directory shells such as ``DCIM`` do not make a card non-empty. Files in
-    the common camera/card housekeeping directories above are ignored, as are
-    a few operating-system metadata files. Every other file must be in
-    ``removed_paths`` for this to return true.
+    Directory shells such as ``DCIM`` do not make a card non-empty. A small
+    allowlist of known metadata files is ignored, but every directory is
+    inspected because names such as ``PRIVATE`` and ``MISC`` can also contain
+    media or user files. Every other file must be in ``removed_paths`` for this
+    to return true. Unreadable trees and directory symlinks fail closed.
     """
     removed = {
         os.path.normcase(os.path.realpath(os.fspath(path))).casefold()
         for path in removed_paths
     }
+
+    def raise_walk_error(error):
+        raise error
+
     try:
-        for root, dirs, files in os.walk(source_dir):
+        if not os.path.isdir(source_dir) or os.path.islink(source_dir):
+            return False
+        for root, dirs, files in os.walk(source_dir, onerror=raise_walk_error):
             relative_root = os.path.relpath(root, source_dir)
             parts = () if relative_root == "." else _path_parts(relative_root)
-            if any(part.casefold() in _CARD_HOUSEKEEPING_DIRS for part in parts):
-                dirs[:] = []
-                continue
-            dirs[:] = [
-                name for name in dirs if name.casefold() not in _CARD_HOUSEKEEPING_DIRS
-            ]
+            relative_parts = tuple(part.casefold() for part in parts)
+            if any(os.path.islink(os.path.join(root, name)) for name in dirs):
+                return False
             for filename in files:
+                file_path = os.path.join(root, filename)
+                if os.path.islink(file_path):
+                    return False
                 if filename.casefold() in _CARD_HOUSEKEEPING_FILES:
                     continue
-                path_key = os.path.normcase(
-                    os.path.realpath(os.path.join(root, filename))
-                ).casefold()
+                if (*relative_parts, filename.casefold()) in _CARD_HOUSEKEEPING_PATHS:
+                    continue
+                path_key = os.path.normcase(os.path.realpath(file_path)).casefold()
                 if path_key not in removed:
                     return False
     except OSError:
@@ -3556,14 +3558,21 @@ def main():
             if not jpg_record:
                 continue
 
-            if target_date:
-                file_date = get_file_date(jpg_record, args.verbose)
-                if file_date is None or file_date != target_date:
-                    continue
-
             metadata = stack_metadata_for_record(data)
             if metadata.state == StackMetadataState.NOT_FOCUS_STACK:
                 continue
+            if target_date:
+                file_date = get_file_date(jpg_record, args.verbose)
+                if file_date is None:
+                    # A confirmed but undatable output still has to reach the
+                    # planner so its identifiable inputs can be held back with
+                    # it. Heuristic candidates have no equally strong grouping
+                    # evidence and retain the ordinary date-filter behavior.
+                    if metadata.state == StackMetadataState.FOCUS_STACK:
+                        stacked_outputs.add(stem)
+                    continue
+                if file_date != target_date:
+                    continue
             if metadata.state == StackMetadataState.FOCUS_STACK:
                 stacked_outputs.add(stem)
                 continue
@@ -3979,6 +3988,13 @@ def main():
                     and not inputs_not_all_raw_backed
                 )
 
+            file_date = (
+                get_file_date(jpg_record, args.verbose) if is_valid_stack else None
+            )
+            undatable_stack = is_valid_stack and file_date is None
+            if undatable_stack:
+                is_valid_stack = False
+
             if args.debug_stacks and numeric_info:
                 print(f"  - Numeric Stem Info: prefix='{prefix}', number={output_num}")
                 if len(sequence_dirs) > 1:
@@ -4006,6 +4022,8 @@ def main():
                     )
                 if not metadata_confirmed and inputs_not_all_raw_backed:
                     print("    - Reason: Inferred input frames are not all RAW-backed.")
+                if undatable_stack:
+                    print("    - Reason: Output JPG has no usable date.")
                 print("--- End Debugging Stack ---")
 
             if not is_valid_stack:
@@ -4021,6 +4039,23 @@ def main():
                     rejected_too_few_inputs += 1
                 if too_many_in_burst:
                     rejected_burst_safety += 1
+                if undatable_stack:
+                    skipped_missing_date += 1
+                    print(
+                        f"Warning: Could not determine date for stacked output "
+                        f"'{output_filename}'. The whole stack will be left on "
+                        "the source so it stays together."
+                    )
+                    for output_file_type in REMAINING_FILE_TYPES:
+                        processed_files_for_remaining.add(
+                            (output_stem, output_file_type)
+                        )
+                    for input_stem in potential_inputs:
+                        claimed_input_stems.add(input_stem)
+                        for input_file_type in REMAINING_FILE_TYPES:
+                            processed_files_for_remaining.add(
+                                (input_stem, input_file_type)
+                            )
                 continue
 
             # --- Stack accepted: plan moves ---

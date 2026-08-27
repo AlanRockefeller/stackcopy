@@ -723,11 +723,15 @@ class NoReplacePrimitiveTests(unittest.TestCase):
 
 
 class ReadOnlyDestinationDirectoryTests(OperationHarness):
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        "root ignores directory permission bits",
+    )
     def test_a_commit_into_a_read_only_directory_fails_closed(self):
         os.chmod(self.dest_dir, stat.S_IRUSR | stat.S_IXUSR)
         self.addCleanup(os.chmod, self.dest_dir, stat.S_IRWXU)
 
-        result, _moved, output = self.run_operation()
+        result, _moved, _output = self.run_operation()
 
         self.assertFalse(bool(result))
         self.assertEqual(self.src.read_bytes(), b"irreplaceable")

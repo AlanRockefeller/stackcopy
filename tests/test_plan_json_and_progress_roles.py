@@ -200,6 +200,25 @@ class CardEmptyHeuristicTests(unittest.TestCase):
                 stackcopy.card_would_be_empty_after(str(card), [str(planned)])
             )
 
+    def test_files_inside_housekeeping_named_directories_are_not_hidden(self):
+        for relative_path in (
+            Path("PRIVATE") / "AVCHD" / "BDMV" / "STREAM" / "00001.MTS",
+            Path("MISC") / "notes.txt",
+        ):
+            with self.subTest(path=relative_path), tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                planned = card / "DCIM" / "100OMSYS" / "P8080001.ORF"
+                write_file(planned, b"raw", datetime(2026, 8, 25))
+                write_file(
+                    card / relative_path,
+                    b"must remain visible",
+                    datetime(2026, 8, 25),
+                )
+
+                self.assertFalse(
+                    stackcopy.card_would_be_empty_after(str(card), [str(planned)])
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -143,10 +143,10 @@ is using. The Windows app ships with ExifTool 13.59 built in, so it should say:
 
     ExifTool 13.59 (bundled) — OM-1 stack metadata enabled
 
-If it instead warns that ExifTool is missing or too old, an older ExifTool
-somewhere on your system may be taking priority. Download the current package
-from <https://exiftool.org/>, rename `exiftool(-k).exe` to `exiftool.exe`, keep
-the `exiftool_files` folder beside it, and replace the old copy.
+If it instead warns that ExifTool is missing or too old, restore the bundled
+ExifTool payload by extracting `stackcopy-windows.zip` again into a new folder.
+If that does not help, download the ZIP again from the Stackcopy Releases page
+and re-extract it; do not copy only `Stackcopy.exe` out of the package.
 
 Without a suitable ExifTool, Stackcopy falls back to comparing filenames and
 timestamps. That works well when a stacked JPG still has its `.ORF` frames
