@@ -1,5 +1,17 @@
 # Change Log
 
+## **1.6.0**
+
+- **Redesigned the GUI around a preview-first workflow.** Stackcopy now scans the card before importing, shows what it found and where each type of file will go, provides clearer **Move**, **Copy**, and **Preview** choices, and shows useful progress, ETA, counters, and safe-stop controls while importing.
+- **Much better Olympus/OM System focus-stack detection.** When ExifTool is available, Stackcopy reads the camera's own stack metadata to identify stacked photos and their exact frame counts. This also handles stacks with missing RAW files, incomplete inputs, or more than 15 frames better than the old heuristic. The existing detection method remains as a fallback.
+- **ExifTool is now included with the Windows app**, so current OM System stack detection works without installing anything extra. macOS and source installations clearly report when ExifTool is missing or too old.
+- **Added update notifications to the GUI.** Stackcopy can tell you when a newer version is available, with options to skip it or be reminded later. It doesn't download or install updates automatically.
+- **Improved support for camera-card contents.** Olympus/OM `.ORI` files are preserved correctly, unrecognized files are clearly reported and left on the card, and conflicting files such as an `.ORF` and `.DNG` with the same name are left untouched rather than guessed at.
+- **Made file moves and overwrites substantially safer.** Stackcopy now protects against destination files changing during an import, accidental same-file operations, case-only path differences, and other edge cases that could previously overwrite or remove the wrong file. When safety cannot be verified, it keeps the source instead.
+- **Made cross-drive/card moves safer.** Stackcopy verifies that a copied file is safely written before deleting the original, and no longer reports a move as successful when the destination was copied but the source could not be removed.
+- **Improved interrupted and partially failed imports.** Ctrl-C stops cleanly, completed work is preserved, re-running is safe, and recovered files or other incomplete outcomes are clearly distinguished from a fully successful import.
+- **Fixed several stack-sorting edge cases**, including stacks crossing camera folders, unrelated frames being borrowed from a previous folder, companion files being split across date folders, unsafe source/destination overlap, invalid timestamps, and exhausted collision filenames.
+
 ## **1.5.9 - 2026-08-24**
 
 ### Fixed

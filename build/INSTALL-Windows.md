@@ -136,3 +136,19 @@ Make sure `StackcopyCLI.exe` is still in the same folder as `Stackcopy.exe`.
 If it is missing, extract `stackcopy-windows.zip` again and run Stackcopy from
 the newly extracted folder.
 
+### Stackcopy says a stack was missed
+
+Stackcopy shows a line near the top of the window telling you what ExifTool it
+is using. The Windows app ships with ExifTool 13.59 built in, so it should say:
+
+    ExifTool 13.59 (bundled) — OM-1 stack metadata enabled
+
+If it instead warns that ExifTool is missing or too old, restore the bundled
+ExifTool payload by extracting `stackcopy-windows.zip` again into a new folder.
+If that does not help, download the ZIP again from the Stackcopy Releases page
+and re-extract it; do not copy only `Stackcopy.exe` out of the package.
+
+Without a suitable ExifTool, Stackcopy falls back to comparing filenames and
+timestamps. That works well when a stacked JPG still has its `.ORF` frames
+beside it, but it can miss a stacked JPG whose RAW frames were deleted or never
+copied.
