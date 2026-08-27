@@ -535,14 +535,18 @@ def classify_other_source_file(name: str, ext_lower: str, size: int) -> str:
     not want to lose when they format the card.
     """
     lowered = name.casefold()
+    # Known housekeeping filenames are trivial no matter their size.
     if lowered in _CAMERA_JUNK_NAMES or lowered in _CARD_HOUSEKEEPING_FILES:
         return "trivial"
-    if lowered.startswith("."):
-        return "trivial"
+    # A recognized data extension is always worth preserving, even when the
+    # name starts with a dot (e.g. ``.shotlist.txt``, ``.settings.xmp``).
     if ext_lower in _OTHER_DATA_EXTENSIONS:
         return "data"
+    # Camera-junk extensions are only disposable while the file stays small;
+    # a large ``.bin``/``.xml``/``.log`` is treated as data the user may keep.
     if ext_lower in _CAMERA_JUNK_EXTENSIONS:
-        return "trivial"
+        return "trivial" if size <= TRIVIAL_OTHER_FILE_BYTES else "data"
+    # Any other small file, including a generic hidden dotfile, is housekeeping.
     if size <= TRIVIAL_OTHER_FILE_BYTES:
         return "trivial"
     return "data"
@@ -3375,8 +3379,12 @@ def main():
                 unrecognized_extensions[extension_label] += 1
                 try:
                     other_size = entry.stat(follow_symlinks=False).st_size
+                    other_size_known = True
                 except OSError:
+                    # The size can't be read.  Fail closed: treat the file as
+                    # data worth preserving rather than tiny/disposable.
                     other_size = 0
+                    other_size_known = False
                 other_source_files.append(
                     {
                         "name": entry.name,
@@ -3386,8 +3394,12 @@ def main():
                         "ext": ext_lower,
                         "label": extension_label,
                         "size": other_size,
-                        "kind": classify_other_source_file(
-                            entry.name, ext_lower, other_size
+                        "kind": (
+                            classify_other_source_file(
+                                entry.name, ext_lower, other_size
+                            )
+                            if other_size_known
+                            else "data"
                         ),
                     }
                 )

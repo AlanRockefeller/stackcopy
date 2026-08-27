@@ -1387,7 +1387,7 @@ class StackcopyGUI(ctk.CTk):
             if plan
             else ""
         )
-        generic_output = "Finished stacked photos - renamed with ‘stacked’ added"
+        generic_output = "Finished stacked photos - renamed with 'stacked' added"
         generic_output += " to the name"
         self.plan_headline_vars["stack_output"].set(
             (
@@ -1895,7 +1895,7 @@ class StackcopyGUI(ctk.CTk):
         """Keep the plan visible and explicit when the scan finds no media."""
         self.plan_heading_var.set("Where these 0 files will land")
         self.plan_headline_vars["stack_output"].set(
-            "0 finished stacked photos - renamed with ‘stacked’ added to the name"
+            "0 finished stacked photos - renamed with 'stacked' added to the name"
         )
         self.plan_headline_vars["stack_input"].set(
             "0 frames that fed those stacks - kept in case you want to stack "
