@@ -78,6 +78,22 @@ def _tk_dialog(title: str, message: str) -> bool:
                 pass
 
 
+def _applescript_string(text: str) -> str:
+    """Escape a Python string for use inside an AppleScript string literal.
+
+    Newlines have to become ``\\n`` escapes: a raw newline inside the quoted
+    literal makes ``osascript`` refuse to compile the script, which is exactly
+    the shape a multi-line dependency error takes.
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r\n", "\\n")
+        .replace("\r", "\\n")
+        .replace("\n", "\\n")
+    )
+
+
 def _native_dialog(title: str, message: str) -> bool:
     """Fall back to a small native dialog when Tk itself is unavailable."""
     try:
@@ -88,19 +104,19 @@ def _native_dialog(title: str, message: str) -> bool:
             return True
 
         if sys.platform == "darwin" and Path("/usr/bin/osascript").is_file():
-            escaped_title = title.replace("\\", "\\\\").replace('"', '\\"')
-            escaped_message = message.replace("\\", "\\\\").replace('"', '\\"')
+            escaped_title = _applescript_string(title)
+            escaped_message = _applescript_string(message)
             script = (
                 f'display alert "{escaped_title}" message "{escaped_message}" '
                 "as critical"
             )
-            subprocess.run(
+            completed = subprocess.run(
                 ["/usr/bin/osascript", "-e", script],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            return True
+            return completed.returncode == 0
 
         for command in ("zenity", "kdialog"):
             executable = shutil.which(command)

@@ -134,7 +134,7 @@ class ForcedOverwriteVisibilityTests(unittest.TestCase):
 
         def rename(src, dst):
             # Let the quarantine, and the restore that puts it back, work.
-            if os.path.basename(os.fspath(src)).startswith(".__stackcopy_guard__"):
+            if os.path.basename(os.fspath(src)).startswith(stackcopy._GUARD_PREFIX):
                 return real_rename(src, dst)
             if os.path.basename(os.fspath(dst)) == "P8081868.ORF":
                 raise OSError(errno.EIO, "device failure")
@@ -1187,7 +1187,7 @@ class CopiedSourceRemainsTests(unittest.TestCase):
         def rename(src, dst):
             key = os.fspath(dst)
             if key not in seen and not os.path.basename(key).startswith(
-                ".__stackcopy_tmp__"
+                stackcopy._TEMP_PREFIX
             ):
                 seen.add(key)
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
@@ -1262,7 +1262,7 @@ class CopiedSourceRemainsTests(unittest.TestCase):
             def rename(src, dst):
                 key = os.fspath(dst)
                 if key not in seen and not os.path.basename(key).startswith(
-                    ".__stackcopy_tmp__"
+                    stackcopy._TEMP_PREFIX
                 ):
                     seen.add(key)
                     raise OSError(errno.EXDEV, "Invalid cross-device link")

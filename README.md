@@ -441,13 +441,13 @@ exiftool -ver          # your ExifTool, e.g. 13.59
 Every Lightroom-mode run also says so itself, on stderr, before it starts
 scanning:
 
-```
+```text
 ExifTool 13.59 — OM System stack metadata enabled
 ```
 
 or, if there is a problem worth fixing:
 
-```
+```text
 ExifTool 12.40 is too old for OM System MakerNotes.
 Using fallback detection; stacks without matching ORF files may be missed.
 Update ExifTool (12.41 or newer, 13.59 recommended).

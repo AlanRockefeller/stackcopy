@@ -5,6 +5,7 @@ load, neither may crash the window, and the folders a photographer chose must
 survive every update-checker write.
 """
 
+import dataclasses
 import json
 import sys
 import types
@@ -478,7 +479,11 @@ class ResultHandlingTests(unittest.TestCase):
 
     def test_an_automatic_check_respects_a_skipped_build_recut(self):
         target = self.fake_gui({updater.SKIPPED_KEY: "1.6.0"})
-        info = self.newer("1.6.0")
+        info = dataclasses.replace(
+            self.newer("1.6.0"),
+            latest_version="1.6.0-build3",
+            tag_name="v1.6.0-build3",
+        )
         events, _ = self.handle(target, manual=False, info=info)
         self.assertNotIn("notify", events)
 
@@ -692,7 +697,7 @@ class HeaderConstructionTests(unittest.TestCase):
         self.assertIn("Check for Updates", labels)
 
     def test_the_update_notice_is_built_but_hidden_until_there_is_news(self):
-        target, log = self.build_header()
+        target, _ = self.build_header()
         self.assertFalse(target.update_row.gridded)
         self.assertEqual(target.update_var.get(), "")
         self.assertTrue(hasattr(target, "update_view_btn"))
@@ -706,7 +711,6 @@ class HeaderConstructionTests(unittest.TestCase):
 
     def test_showing_a_notice_reveals_the_row_and_hiding_it_puts_it_back(self):
         target, _ = self.build_header()
-        target.update_label = target.update_label  # already built
         gui.StackcopyGUI._set_update_notice(target, "Checking…")
         self.assertTrue(target.update_row.gridded)
         self.assertEqual(target.update_var.get(), "Checking…")

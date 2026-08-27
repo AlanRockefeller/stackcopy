@@ -570,7 +570,8 @@ class ImportOutcomeAccountingTests(unittest.TestCase):
                 return real_rename(src, dst)
 
             def unlink(path, **kwargs):
-                if os.fspath(path).endswith("card/P8080009.ORF"):
+                parts = Path(os.fspath(path)).parts
+                if parts[-2:] == ("card", "P8080009.ORF"):
                     raise PermissionError(errno.EACCES, "read-only card")
                 return real_unlink(path, **kwargs)
 
