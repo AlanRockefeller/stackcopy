@@ -2,7 +2,7 @@
 
 Olympus / OM-System in-camera stacking produces many RAW/JPG frames per final JPG. Other importers like Lightroom don't automatically group or separate them, so imports get cluttered. This script separates originals from stacked outputs automatically, so you only need to process the photos that need your attention.
 
-Works on Linux, macOS, WSL, and Windows.
+Works on Linux, macOS, WSL, and Windows. Tested on OM System OM1 & OM System OM5.
 
 Prefer a window to the command line? There's a point-and-click [graphical interface](#graphical-interface-gui) for the import workflow.
 
