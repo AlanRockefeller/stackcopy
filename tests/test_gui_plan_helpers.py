@@ -111,6 +111,126 @@ class OtherCardFilesTests(unittest.TestCase):
         self.assertIn("Copy anything you want to keep", note)
         self.assertIn("format the card in the camera", note)
 
+    def test_post_import_notice_carries_extra_and_tiny_file_warning(self):
+        title, body = gui.post_import_card_notice(
+            plan_payload(
+                other_files=2,
+                other_files_bytes=5_000_000,
+                other_files_trivial=3,
+                other_file_kinds={".TXT": 2},
+            ),
+            leave_on_card=True,
+        )
+        self.assertEqual(title, "Before you format the card")
+        self.assertIn("not photos or videos", body)
+        self.assertIn("3 tiny camera files are ignored", body)
+        self.assertIn("format the card in the camera", body)
+
+    def test_post_import_notice_always_includes_formatting_advice(self):
+        title, body = gui.post_import_card_notice(
+            plan_payload(), leave_on_card=True
+        )
+        self.assertEqual(title, "Before your next shoot")
+        self.assertIn("format the card in the camera", body)
+
+
+class PlanScanActivityTests(unittest.TestCase):
+    def test_scan_activity_bar_starts_and_stops_with_scan(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._running = False
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_var = mock.Mock()
+        window.start_btn = mock.Mock()
+
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+        window.source_scan_progress.grid.assert_called_once_with()
+        window.source_scan_progress.start.assert_called_once_with()
+
+        gui.StackcopyGUI._set_plan_scanning(window, False)
+        window.source_scan_progress.stop.assert_called_once_with()
+        window.source_scan_progress.grid_remove.assert_called_once_with()
+
+
+class ResultCardNoticeTests(unittest.TestCase):
+    @staticmethod
+    def result_window(plan):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        for name in (
+            "activity",
+            "running_controls",
+            "result_controls",
+            "open_btn",
+            "phase_var",
+            "meta_var",
+            "result_body_var",
+            "result_body_label",
+            "progress",
+            "current_file_label",
+            "card_followup_note",
+            "card_followup_title_var",
+            "card_followup_body_var",
+            "card_followup_body_label",
+        ):
+            setattr(window, name, mock.Mock())
+        window._plan = plan
+        window.mode_var = mock.Mock()
+        window.mode_var.get.return_value = gui.COPY_MODE
+        return window
+
+    def test_card_warning_is_shown_after_success(self):
+        window = self.result_window(
+            plan_payload(other_files=1, other_files_bytes=100, other_files_trivial=2)
+        )
+
+        gui.StackcopyGUI._show_result(
+            window,
+            "1 file imported",
+            "done",
+            problems=0,
+            allow_open=True,
+            success=True,
+        )
+
+        window.card_followup_note.grid.assert_called_once_with()
+        body = window.card_followup_body_var.set.call_args.args[0]
+        self.assertIn("not photos or videos", body)
+        self.assertIn("2 tiny camera files are ignored", body)
+
+    def test_card_warning_is_hidden_when_import_did_not_succeed(self):
+        window = self.result_window(
+            plan_payload(other_files=1, other_files_bytes=100, other_files_trivial=2)
+        )
+
+        gui.StackcopyGUI._show_result(
+            window,
+            "Import did not finish",
+            "failed",
+            problems=1,
+            allow_open=False,
+        )
+
+        window.card_followup_note.grid.assert_not_called()
+        window.card_followup_note.grid_remove.assert_called_once_with()
+
+
+class ConditionalScrollbarTests(unittest.TestCase):
+    def test_scrollbar_is_hidden_when_content_fits_and_restored_when_needed(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._body_scrollbar_visible = None
+        window.body = mock.Mock()
+        window.body._parent_canvas = mock.Mock()
+        window.body._scrollbar = mock.Mock()
+        window.body._parent_canvas.winfo_height.return_value = 700
+        window.body.winfo_reqheight.return_value = 650
+
+        gui.StackcopyGUI._update_body_scrollbar(window)
+        window.body._scrollbar.grid_remove.assert_called_once_with()
+
+        window.body.winfo_reqheight.return_value = 750
+        gui.StackcopyGUI._update_body_scrollbar(window)
+        window.body._scrollbar.grid.assert_called_once_with()
+
 
 class ProgressParserTests(unittest.TestCase):
     def test_role_and_stack_output_name_survive_spaces(self):
