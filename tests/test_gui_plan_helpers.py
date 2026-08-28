@@ -138,6 +138,7 @@ class PlanScanActivityTests(unittest.TestCase):
     def test_scan_activity_bar_starts_and_stops_with_scan(self):
         window = mock.Mock(spec=gui.StackcopyGUI)
         window._plan_slow_after = None
+        window._plan_scanning = False
         window._running = False
         window.source_scan_progress = mock.Mock()
         window.source_scan_var = mock.Mock()
@@ -150,6 +151,21 @@ class PlanScanActivityTests(unittest.TestCase):
         gui.StackcopyGUI._set_plan_scanning(window, False)
         window.source_scan_progress.stop.assert_called_once_with()
         window.source_scan_progress.grid_remove.assert_called_once_with()
+
+    def test_repeated_scanning_calls_do_not_restart_activity_bar(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._plan_scanning = False
+        window._running = False
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_var = mock.Mock()
+        window.start_btn = mock.Mock()
+
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+
+        window.source_scan_progress.start.assert_called_once_with()
 
 
 class ResultCardNoticeTests(unittest.TestCase):

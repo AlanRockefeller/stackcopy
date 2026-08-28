@@ -1390,6 +1390,7 @@ class StackcopyGUI(ctk.CTk):
             ).start()
 
     def _set_plan_scanning(self, scanning: bool) -> None:
+        was_scanning = self._plan_scanning
         self._plan_scanning = scanning
         if self._plan_slow_after is not None:
             self.after_cancel(self._plan_slow_after)
@@ -1397,7 +1398,8 @@ class StackcopyGUI(ctk.CTk):
         if scanning:
             self.source_scan_var.set("Scanning card…")
             self.source_scan_progress.grid()
-            self.source_scan_progress.start()
+            if not was_scanning:
+                self.source_scan_progress.start()
         else:
             self.source_scan_progress.stop()
             self.source_scan_progress.grid_remove()
