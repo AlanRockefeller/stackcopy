@@ -305,6 +305,33 @@ def describe_other_card_files(plan: dict[str, object] | None) -> str:
     )
 
 
+def post_import_card_notice(
+    plan: dict[str, object] | None, *, leave_on_card: bool
+) -> tuple[str, str] | None:
+    """Build card cleanup advice for a successfully completed import."""
+    if not plan or not plan.get("source_is_removable"):
+        return None
+    other_files = describe_other_card_files(plan)
+    if other_files:
+        return "Before you format the card", other_files
+    if source_will_be_empty(plan, leave_on_card=leave_on_card):
+        return (
+            "Your card is now empty",
+            (
+                "Format the card in the camera before your next shoot rather than "
+                "deleting on the computer - it keeps the folder numbering clean."
+            ),
+        )
+    return (
+        "Before your next shoot",
+        (
+            "Tip: format the card in the camera when you are ready to clear it - it "
+            "keeps a clean file structure and is easier on the card than deleting "
+            "files."
+        ),
+    )
+
+
 def source_will_be_empty(
     plan: dict[str, object] | None, *, leave_on_card: bool
 ) -> bool:
@@ -569,8 +596,8 @@ class StackcopyGUI(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"{APP_TITLE} - Import from card")
-        self.geometry("920x860")
-        self.minsize(820, 760)
+        self.geometry("920x800")
+        self.minsize(820, 700)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -606,6 +633,7 @@ class StackcopyGUI(ctk.CTk):
         self._update_manual = False
         self._update_dialog = None
         self._update_after: str | None = None
+        self._body_scrollbar_visible: bool | None = None
 
         lightroom_default, stack_default = default_dirs()
         # The whole settings file is kept in memory and written back whole, so
@@ -640,6 +668,16 @@ class StackcopyGUI(ctk.CTk):
         self._build_plan_section()
         self._build_actions()
         self._build_activity()
+        # CTkScrollableFrame reserves a scrollbar even when everything fits.
+        # Re-evaluate after layout changes so the normal window stays clean,
+        # while small windows and expanded result/log views remain scrollable.
+        self.body.bind(
+            "<Configure>", self._schedule_body_scrollbar_update, add="+"
+        )
+        self.body._parent_canvas.bind(  # type: ignore[attr-defined]
+            "<Configure>", self._schedule_body_scrollbar_update, add="+"
+        )
+        self.after_idle(self._update_body_scrollbar)
 
         self.src_var.trace_add("write", lambda *_: self._on_path_changed())
         self.dst_var.trace_add("write", lambda *_: self._on_path_changed())
@@ -788,23 +826,35 @@ class StackcopyGUI(ctk.CTk):
             wraplength=590,
             text_color=("gray38", "gray66"),
         ).grid(row=1, column=1, sticky="ew", pady=(1, 12))
-        self.source_extra_var = ctk.StringVar(value="")
-        self.source_extra_label = ctk.CTkLabel(
-            self.source_frame,
-            textvariable=self.source_extra_var,
-            anchor="w",
-            justify="left",
-            wraplength=590,
-            text_color=("#8a5a00", "#e0b050"),
+        self.source_scan_progress = ctk.CTkProgressBar(
+            self.source_frame, height=5, mode="indeterminate"
         )
-        self.source_extra_label.grid(row=2, column=1, sticky="ew", pady=(0, 12))
-        self.source_extra_label.grid_remove()
+        self.source_scan_progress.grid(
+            row=2, column=1, sticky="ew", pady=(0, 12)
+        )
+        self.source_scan_progress.grid_remove()
         self.choose_source_btn = self._text_button(
             self.source_frame,
             "Choose a different folder…",
             lambda: self._browse(self.src_var, "Choose a camera card or folder"),
         )
         self.choose_source_btn.grid(row=0, column=2, rowspan=3, padx=14)
+
+    def _schedule_body_scrollbar_update(self, _event=None) -> None:
+        self.after_idle(self._update_body_scrollbar)
+
+    def _update_body_scrollbar(self) -> None:
+        """Show the main scrollbar only when the current content needs it."""
+        canvas = self.body._parent_canvas  # type: ignore[attr-defined]
+        scrollbar = self.body._scrollbar  # type: ignore[attr-defined]
+        needs_scrollbar = self.body.winfo_reqheight() > canvas.winfo_height() + 1
+        if needs_scrollbar == self._body_scrollbar_visible:
+            return
+        self._body_scrollbar_visible = needs_scrollbar
+        if needs_scrollbar:
+            scrollbar.grid()
+        else:
+            scrollbar.grid_remove()
 
     def _build_mode_section(self) -> None:
         frame = ctk.CTkFrame(self.body, fg_color="transparent")
@@ -1042,25 +1092,29 @@ class StackcopyGUI(ctk.CTk):
             command=self._import_another,
         ).grid(row=0, column=1, padx=(10, 0))
         self.result_controls.grid_remove()
-        self.card_empty_note = ctk.CTkFrame(self.activity, border_width=1)
-        self.card_empty_note.grid(row=6, column=0, sticky="ew", padx=16, pady=(13, 0))
+        self.card_followup_note = ctk.CTkFrame(self.activity, border_width=1)
+        self.card_followup_note.grid(
+            row=6, column=0, sticky="ew", padx=16, pady=(13, 0)
+        )
+        self.card_followup_title_var = ctk.StringVar(value="")
         ctk.CTkLabel(
-            self.card_empty_note,
-            text="Your card is now empty",
+            self.card_followup_note,
+            textvariable=self.card_followup_title_var,
             anchor="w",
             font=ctk.CTkFont(weight="bold"),
         ).grid(row=0, column=0, sticky="w", padx=12, pady=(9, 0))
-        ctk.CTkLabel(
-            self.card_empty_note,
-            text=(
-                "Format the card in the camera before your next shoot rather than "
-                "deleting on the computer - it keeps the folder numbering clean."
-            ),
+        self.card_followup_body_var = ctk.StringVar(value="")
+        self.card_followup_body_label = ctk.CTkLabel(
+            self.card_followup_note,
+            textvariable=self.card_followup_body_var,
             anchor="w",
             justify="left",
             wraplength=790,
-        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 9))
-        self.card_empty_note.grid_remove()
+        )
+        self.card_followup_body_label.grid(
+            row=1, column=0, sticky="ew", padx=12, pady=(2, 9)
+        )
+        self.card_followup_note.grid_remove()
         self.log_toggle = self._text_button(
             self.activity, "Show detailed log ▾", self._toggle_log
         )
@@ -1340,14 +1394,19 @@ class StackcopyGUI(ctk.CTk):
             ).start()
 
     def _set_plan_scanning(self, scanning: bool) -> None:
+        was_scanning = self._plan_scanning
         self._plan_scanning = scanning
         if self._plan_slow_after is not None:
             self.after_cancel(self._plan_slow_after)
             self._plan_slow_after = None
         if scanning:
             self.source_scan_var.set("Scanning card…")
-            self.source_extra_var.set("")
-            self.source_extra_label.grid_remove()
+            self.source_scan_progress.grid()
+            if not was_scanning:
+                self.source_scan_progress.start()
+        else:
+            self.source_scan_progress.stop()
+            self.source_scan_progress.grid_remove()
         self.start_btn.configure(
             state="disabled" if scanning or self._running else "normal"
         )
@@ -1451,21 +1510,7 @@ class StackcopyGUI(ctk.CTk):
             if subdirs:
                 text += " - scanned including " + ", ".join(subdirs)
             self.source_scan_var.set(text)
-        self._update_other_files_note(payload)
         self._refresh_idle_plan()
-
-    def _update_other_files_note(self, payload: dict[str, object] | None) -> None:
-        note = describe_other_card_files(payload)
-        if not note:
-            self.source_extra_var.set("")
-            self.source_extra_label.grid_remove()
-            return
-        has_data = bool(payload and int(payload.get("other_files", 0) or 0))
-        self.source_extra_label.configure(
-            text_color=("#8a5a00", "#e0b050") if has_data else ("gray38", "gray66")
-        )
-        self.source_extra_var.set(note)
-        self.source_extra_label.grid()
 
     # -- disclosures -----------------------------------------------------
 
@@ -1569,7 +1614,7 @@ class StackcopyGUI(ctk.CTk):
         self.actions.grid_remove()
         self.activity.grid()
         self.result_controls.grid_remove()
-        self.card_empty_note.grid_remove()
+        self.card_followup_note.grid_remove()
         self.running_controls.grid()
         self.progress.grid()
         self.current_file_label.grid()
@@ -1929,17 +1974,28 @@ class StackcopyGUI(ctk.CTk):
         self.progress.grid_remove()
         self.current_file_label.grid_remove()
         self._update_counter_cards(problems=problems)
-        show_empty = (
-            success
-            and source_will_be_empty(
+        card_notice = None
+        if success and problems == 0:
+            card_notice = post_import_card_notice(
                 self._plan, leave_on_card=self.mode_var.get() == COPY_MODE
             )
-            and problems == 0
-        )
-        if show_empty:
-            self.card_empty_note.grid()
+        if card_notice:
+            title, body = card_notice
+            self.card_followup_title_var.set(title)
+            self.card_followup_body_var.set(body)
+            has_extra_data = bool(
+                self._plan and int(self._plan.get("other_files", 0) or 0)
+            )
+            self.card_followup_body_label.configure(
+                text_color=(
+                    ("#8a5a00", "#e0b050")
+                    if has_extra_data
+                    else ("gray32", "gray74")
+                )
+            )
+            self.card_followup_note.grid()
         else:
-            self.card_empty_note.grid_remove()
+            self.card_followup_note.grid_remove()
 
     # -- log, cancel, open -----------------------------------------------
 
