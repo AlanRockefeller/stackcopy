@@ -133,6 +133,17 @@ class OtherCardFilesTests(unittest.TestCase):
         self.assertEqual(title, "Before your next shoot")
         self.assertIn("format the card in the camera", body)
 
+    def test_post_import_notice_is_omitted_for_non_removable_source(self):
+        notice = gui.post_import_card_notice(
+            plan_payload(
+                source_is_removable=False,
+                other_files=1,
+                other_files_bytes=100,
+            ),
+            leave_on_card=False,
+        )
+        self.assertIsNone(notice)
+
 
 class PlanScanActivityTests(unittest.TestCase):
     def test_scan_activity_bar_starts_and_stops_with_scan(self):
@@ -224,6 +235,21 @@ class ResultCardNoticeTests(unittest.TestCase):
             "failed",
             problems=1,
             allow_open=False,
+        )
+
+        window.card_followup_note.grid.assert_not_called()
+        window.card_followup_note.grid_remove.assert_called_once_with()
+
+    def test_card_warning_is_hidden_for_non_removable_source(self):
+        window = self.result_window(plan_payload(source_is_removable=False))
+
+        gui.StackcopyGUI._show_result(
+            window,
+            "1 file imported",
+            "done",
+            problems=0,
+            allow_open=True,
+            success=True,
         )
 
         window.card_followup_note.grid.assert_not_called()

@@ -307,8 +307,10 @@ def describe_other_card_files(plan: dict[str, object] | None) -> str:
 
 def post_import_card_notice(
     plan: dict[str, object] | None, *, leave_on_card: bool
-) -> tuple[str, str]:
+) -> tuple[str, str] | None:
     """Build card cleanup advice for a successfully completed import."""
+    if not plan or not plan.get("source_is_removable"):
+        return None
     other_files = describe_other_card_files(plan)
     if other_files:
         return "Before you format the card", other_files
@@ -669,7 +671,9 @@ class StackcopyGUI(ctk.CTk):
         # CTkScrollableFrame reserves a scrollbar even when everything fits.
         # Re-evaluate after layout changes so the normal window stays clean,
         # while small windows and expanded result/log views remain scrollable.
-        self.body.bind("<Configure>", self._schedule_body_scrollbar_update)
+        self.body.bind(
+            "<Configure>", self._schedule_body_scrollbar_update, add="+"
+        )
         self.body._parent_canvas.bind(  # type: ignore[attr-defined]
             "<Configure>", self._schedule_body_scrollbar_update, add="+"
         )
@@ -1970,11 +1974,13 @@ class StackcopyGUI(ctk.CTk):
         self.progress.grid_remove()
         self.current_file_label.grid_remove()
         self._update_counter_cards(problems=problems)
-        show_card_followup = success and problems == 0
-        if show_card_followup:
-            title, body = post_import_card_notice(
+        card_notice = None
+        if success and problems == 0:
+            card_notice = post_import_card_notice(
                 self._plan, leave_on_card=self.mode_var.get() == COPY_MODE
             )
+        if card_notice:
+            title, body = card_notice
             self.card_followup_title_var.set(title)
             self.card_followup_body_var.set(body)
             has_extra_data = bool(
