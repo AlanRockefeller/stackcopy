@@ -198,6 +198,7 @@ class ResultCardNoticeTests(unittest.TestCase):
             "card_followup_title_var",
             "card_followup_body_var",
             "card_followup_body_label",
+            "after_idle",
         ):
             setattr(window, name, mock.Mock())
         window._plan = plan
@@ -223,6 +224,7 @@ class ResultCardNoticeTests(unittest.TestCase):
         body = window.card_followup_body_var.set.call_args.args[0]
         self.assertIn("not photos or videos", body)
         self.assertIn("2 tiny camera files are ignored", body)
+        window.after_idle.assert_called_once_with(window._scroll_result_into_view)
 
     def test_card_warning_is_hidden_when_import_did_not_succeed(self):
         window = self.result_window(
@@ -239,6 +241,15 @@ class ResultCardNoticeTests(unittest.TestCase):
 
         window.card_followup_note.grid.assert_not_called()
         window.card_followup_note.grid_remove.assert_called_once_with()
+
+    def test_completion_scrolls_to_the_visible_result_area(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window.body = mock.Mock()
+        window.body._parent_canvas = mock.Mock()
+
+        gui.StackcopyGUI._scroll_result_into_view(window)
+
+        window.body._parent_canvas.yview_moveto.assert_called_once_with(1.0)
 
     def test_card_warning_is_hidden_for_non_removable_source(self):
         window = self.result_window(plan_payload(source_is_removable=False))

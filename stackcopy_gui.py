@@ -1094,7 +1094,7 @@ class StackcopyGUI(ctk.CTk):
         self.result_controls.grid_remove()
         self.card_followup_note = ctk.CTkFrame(self.activity, border_width=1)
         self.card_followup_note.grid(
-            row=6, column=0, sticky="ew", padx=16, pady=(13, 0)
+            row=1, column=0, sticky="ew", padx=16, pady=(12, 0)
         )
         self.card_followup_title_var = ctk.StringVar(value="")
         ctk.CTkLabel(
@@ -1993,9 +1993,21 @@ class StackcopyGUI(ctk.CTk):
                     else ("gray32", "gray74")
                 )
             )
+            self.card_followup_note.configure(
+                border_color=(
+                    ("#b7791f", "#e0b050")
+                    if has_extra_data
+                    else ("gray70", "gray35")
+                )
+            )
             self.card_followup_note.grid()
         else:
             self.card_followup_note.grid_remove()
+        self.after_idle(self._scroll_result_into_view)
+
+    def _scroll_result_into_view(self) -> None:
+        """Ensure completion details are visible after the layout changes."""
+        self.body._parent_canvas.yview_moveto(1.0)  # type: ignore[attr-defined]
 
     # -- log, cancel, open -----------------------------------------------
 
