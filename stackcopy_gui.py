@@ -171,6 +171,15 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
     ):
         return None
     normalized["source_subdirs_scanned"] = subdirs
+    for field in ("dest_dirs", "dest_dates"):
+        # Older CLIs do not send these; an absent list simply means the GUI
+        # falls back to showing the headline destination on its own.
+        value = normalized.get(field, [])
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            return None
+        normalized[field] = value
     return normalized
 
 
@@ -245,6 +254,28 @@ def import_button_label(
         return "Start import"
     action = "Copy" if leave_on_card else "Move"
     return f"{action} {int(plan['total'])} files"
+
+
+def dated_folder_summary(plan: dict[str, object] | None) -> tuple[str, list[str]]:
+    """Say how many dated folders the import touches, and name them all.
+
+    The plan rows show the folder for the newest date on the card, so a card
+    holding several days of shooting would otherwise look like it all lands in
+    one place.  Returns ("", []) when there is nothing extra to disclose - a
+    single date, or an older CLI that does not report the folder list.
+    """
+    if not plan:
+        return "", []
+    dates = [str(item) for item in plan.get("dest_dates", [])]
+    folders = [str(item) for item in plan.get("dest_dirs", [])]
+    if len(dates) < 2:
+        return "", []
+    folder_noun = "folder" if len(folders) == 1 else "folders"
+    summary = (
+        f"These files were shot on {len(dates)} dates, {dates[0]} to "
+        f"{dates[-1]}, so they land in {len(folders)} dated {folder_noun}"
+    )
+    return summary, folders
 
 
 def describe_other_card_files(plan: dict[str, object] | None) -> str:
@@ -934,6 +965,39 @@ class StackcopyGUI(ctk.CTk):
             button.grid(row=row * 2, column=2, rowspan=2, padx=(10, 14))
             self.destination_buttons.append(button)
 
+        # A card can hold several days of shooting, and each day gets its own
+        # dated folder.  The rows above show the newest one, so disclose the
+        # rest here rather than letting the newest stand in for all of them.
+        self._dated_folders_open = False
+        self.dated_summary_var = ctk.StringVar(value="")
+        self.dated_summary_btn = ctk.CTkButton(
+            self.plan_rows,
+            textvariable=self.dated_summary_var,
+            command=self._toggle_dated_folders,
+            width=1,
+            anchor="w",
+            fg_color="transparent",
+            hover_color=("gray82", "gray28"),
+            text_color=("#1f6aa5", "#5aa7df"),
+        )
+        self.dated_summary_btn.grid(
+            row=6, column=1, columnspan=2, sticky="ew", padx=(0, 14), pady=(0, 4)
+        )
+        self.dated_summary_btn.grid_remove()
+        self.dated_list_var = ctk.StringVar(value="")
+        self.dated_list_label = ctk.CTkLabel(
+            self.plan_rows,
+            textvariable=self.dated_list_var,
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(family=_mono_family(), size=12),
+            text_color=("gray35", "gray68"),
+        )
+        self.dated_list_label.grid(
+            row=7, column=1, columnspan=2, sticky="ew", padx=(0, 14), pady=(0, 10)
+        )
+        self.dated_list_label.grid_remove()
+
     def _build_actions(self) -> None:
         self.actions = ctk.CTkFrame(self.body, fg_color="transparent")
         self.actions.grid(row=5, column=0, sticky="ew", padx=22, pady=(15, 18))
@@ -1487,6 +1551,7 @@ class StackcopyGUI(ctk.CTk):
         self.plan_path_vars["stack_output"].set(lightroom_path)
         self.plan_path_vars["stack_input"].set(stack_path)
         self.plan_path_vars["other"].set(lightroom_path)
+        self._refresh_dated_folders()
         self.start_btn.configure(
             text=import_button_label(
                 plan, leave_on_card=self.mode_var.get() == COPY_MODE
@@ -1513,6 +1578,26 @@ class StackcopyGUI(ctk.CTk):
         self._refresh_idle_plan()
 
     # -- disclosures -----------------------------------------------------
+
+    def _toggle_dated_folders(self) -> None:
+        self._dated_folders_open = not self._dated_folders_open
+        self._refresh_dated_folders()
+
+    def _refresh_dated_folders(self) -> None:
+        summary, folders = dated_folder_summary(self._plan)
+        if not summary:
+            self._dated_folders_open = False
+            self.dated_summary_btn.grid_remove()
+            self.dated_list_label.grid_remove()
+            return
+        arrow = "\u25b4" if self._dated_folders_open else "\u25be"
+        self.dated_summary_var.set(f"{summary}  {arrow}")
+        self.dated_summary_btn.grid()
+        if self._dated_folders_open:
+            self.dated_list_var.set("\n".join(folders))
+            self.dated_list_label.grid()
+        else:
+            self.dated_list_label.grid_remove()
 
     def _toggle_advanced(self) -> None:
         self._advanced_open = not self._advanced_open
@@ -1950,6 +2035,9 @@ class StackcopyGUI(ctk.CTk):
             "0 single shots and videos - names untouched, dated folders as "
             "Lightroom would make them"
         )
+        self._dated_folders_open = False
+        self.dated_summary_btn.grid_remove()
+        self.dated_list_label.grid_remove()
 
     def _show_result(
         self,

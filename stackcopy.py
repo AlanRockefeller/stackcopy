@@ -4632,6 +4632,17 @@ def main():
                 "other_file_examples": [f["name"] for f in data_others[:6]],
             }
 
+            # The dated folder for the newest date is the headline destination,
+            # but a card spanning several days lands in one folder per day.
+            # Hand the GUI every folder and every date so it can say so rather
+            # than showing the newest one as if it were the only one.
+            planned_dates = sorted(
+                {
+                    move.mtime.date().isoformat()
+                    for move in planned_moves
+                    if move.mtime is not None
+                }
+            )
             planned_sources = [move.src_path for move in planned_moves]
             would_be_empty = card_would_be_empty_after(src_dir, planned_sources)
             if args.leave_on_card and planned_sources:
@@ -4650,6 +4661,8 @@ def main():
                 "dest_lightroom": dated_lightroom,
                 "dest_stack_input": dated_stack_input,
                 "source_subdirs_scanned": sorted(scanned_source_subdirs),
+                "dest_dirs": all_dest_dirs,
+                "dest_dates": planned_dates,
                 "source_is_removable": source_is_removable(src_dir),
                 "source_would_be_empty_after": would_be_empty,
             }
