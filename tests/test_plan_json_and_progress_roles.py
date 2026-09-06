@@ -87,6 +87,78 @@ class PlanJsonTests(unittest.TestCase):
             self.assertFalse(lightroom.exists())
             self.assertFalse(stack_input.exists())
 
+    def test_plan_payload_names_every_dated_folder_not_just_the_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "card"
+            camera_dir = source / "DCIM" / "100OMSYS"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+
+            write_file(camera_dir / "P8080001.ORF", b"a", datetime(2026, 8, 23, 9))
+            write_file(camera_dir / "P8080002.ORF", b"b", datetime(2026, 8, 25, 9))
+            write_file(camera_dir / "P8080003.MOV", b"c", datetime(2026, 8, 25, 10))
+
+            code, output = run_main(
+                ["--lightroomimport", str(source), "--plan-json"],
+                lightroom=lightroom,
+                stack_input=stack_input,
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output)
+            self.assertEqual(payload["dest_dates"], ["2026-08-23", "2026-08-25"])
+            self.assertEqual(
+                payload["dest_dirs"],
+                [
+                    str(lightroom / "2026" / "2026-08-23"),
+                    str(lightroom / "2026" / "2026-08-25"),
+                ],
+            )
+            # The headline destination stays the newest date, so the extra
+            # folder is only visible because the full list is reported.
+            self.assertEqual(
+                payload["dest_lightroom"], str(lightroom / "2026" / "2026-08-25")
+            )
+
+    def test_dest_dates_follow_the_planned_folder_not_each_files_mtime(self):
+        """A stem straddling midnight lands in one folder and reports one date.
+
+        The RAW is the authority for the whole stem, so its JPG and ORI
+        companions go to the RAW's date folder even though their own mtimes
+        fall on the next day.  Reporting their mtimes would claim two dates
+        for a single dated folder.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "card"
+            camera_dir = source / "DCIM" / "100OMSYS"
+            lightroom = root / "Lightroom"
+            stack_input = root / "StackInput"
+
+            write_file(
+                camera_dir / "P8080001.ORF", b"raw", datetime(2026, 8, 24, 23, 59, 59)
+            )
+            write_file(
+                camera_dir / "P8080001.JPG", b"jpg", datetime(2026, 8, 25, 0, 0, 0)
+            )
+            write_file(
+                camera_dir / "P8080001.ORI", b"ori", datetime(2026, 8, 25, 0, 0, 0)
+            )
+
+            code, output = run_main(
+                ["--lightroomimport", str(source), "--plan-json"],
+                lightroom=lightroom,
+                stack_input=stack_input,
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output)
+            self.assertEqual(
+                payload["dest_dirs"], [str(lightroom / "2026" / "2026-08-24")]
+            )
+            self.assertEqual(payload["dest_dates"], ["2026-08-24"])
+
     def test_plan_json_suppresses_scan_progress_sentinel(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

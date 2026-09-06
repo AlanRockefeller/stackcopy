@@ -2,6 +2,7 @@
 
 ## **1.6.0**
 
+- **The GUI now shows every folder your photos will go into.** If a card holds photos from more than one day, each day gets its own dated folder. The GUI used to show only the newest one. It now says how many dates and folders there are, and you can click to see the full list before you import.
 - **Redesigned the GUI around a preview-first workflow.** Stackcopy now scans the card before importing, shows what it found and where each type of file will go, provides clearer **Move**, **Copy**, and **Preview** choices, and shows useful progress, ETA, counters, and safe-stop controls while importing.
 - **Much better Olympus/OM System focus-stack detection.** When ExifTool is available, Stackcopy reads the camera's own stack metadata to identify stacked photos and their exact frame counts. This also handles stacks with missing RAW files, incomplete inputs, or more than 15 frames better than the old heuristic. The existing detection method remains as a fallback.
 - **ExifTool is now included with the Windows app**, so current OM System stack detection works without installing anything extra. macOS and source installations clearly report when ExifTool is missing or too old.

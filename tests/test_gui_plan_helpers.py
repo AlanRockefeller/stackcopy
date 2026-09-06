@@ -84,6 +84,38 @@ class PlanParserTests(unittest.TestCase):
         self.assertIsNone(gui.parse_plan_json(json.dumps(plan_payload(bytes=-1))))
 
 
+class DatedFolderSummaryTests(unittest.TestCase):
+    def test_single_date_discloses_nothing(self):
+        summary, folders = gui.dated_folder_summary(
+            plan_payload(
+                dest_dates=["2026-08-25"],
+                dest_dirs=[r"Pictures\Lightroom\2026\2026-08-25"],
+            )
+        )
+        self.assertEqual(summary, "")
+        self.assertEqual(folders, [])
+
+    def test_older_cli_without_folder_fields_discloses_nothing(self):
+        self.assertEqual(gui.dated_folder_summary(plan_payload()), ("", []))
+        self.assertEqual(gui.dated_folder_summary(None), ("", []))
+
+    def test_multiple_dates_name_every_folder(self):
+        dirs = [
+            r"Pictures\Lightroom\2026\2026-08-23",
+            r"Pictures\Lightroom\2026\2026-08-25",
+            r"Pictures\olympus.stack.input.photos\2026\2026-08-25",
+        ]
+        summary, folders = gui.dated_folder_summary(
+            plan_payload(
+                dest_dates=["2026-08-23", "2026-08-25"], dest_dirs=dirs
+            )
+        )
+        self.assertIn("2 dates", summary)
+        self.assertIn("2026-08-23 to 2026-08-25", summary)
+        self.assertIn("3 dated folders", summary)
+        self.assertEqual(folders, dirs)
+
+
 class OtherCardFilesTests(unittest.TestCase):
     def test_no_note_when_card_holds_only_media(self):
         self.assertEqual(gui.describe_other_card_files(plan_payload()), "")
