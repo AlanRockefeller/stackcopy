@@ -283,7 +283,7 @@ def describe_other_card_files(plan: dict[str, object] | None) -> str:
 
     Lists real data the photographer might want to keep, mentions disposable
     camera files only in passing, and always nudges toward formatting the card
-    in the camera for a clean file structure and longer card life.
+    in the camera once the photos are confirmed copied and backed up.
     """
     if not plan:
         return ""
@@ -293,8 +293,10 @@ def describe_other_card_files(plan: dict[str, object] | None) -> str:
         return ""
 
     format_tip = (
-        "Tip: format the card in the camera before your next shoot - it keeps a "
-        "clean file structure and is easier on the card than deleting files."
+        "After confirming that your photos are safely copied and backed up, "
+        "format the card in the camera before your next shoot. This gives you a "
+        "clean card and recreates the file structure the way the camera expects, "
+        "reducing the chance of issues or data loss."
     )
 
     if not data_count:
@@ -349,16 +351,19 @@ def post_import_card_notice(
         return (
             "Your card is now empty",
             (
-                "Format the card in the camera before your next shoot rather than "
-                "deleting on the computer - it keeps the folder numbering clean."
+                "After confirming that your photos are safely copied and backed "
+                "up, format the card in the camera before your next shoot. This "
+                "gives you a clean card and recreates the file structure the way "
+                "the camera expects, reducing the chance of issues or data loss."
             ),
         )
     return (
         "Before your next shoot",
         (
-            "Tip: format the card in the camera when you are ready to clear it - it "
-            "keeps a clean file structure and is easier on the card than deleting "
-            "files."
+            "After confirming that your photos are safely copied and backed up, "
+            "format the card in the camera before your next shoot. This gives you "
+            "a clean card and recreates the file structure the way the camera "
+            "expects, reducing the chance of issues or data loss."
         ),
     )
 
