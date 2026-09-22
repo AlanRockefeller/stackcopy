@@ -1,5 +1,11 @@
 # Change Log
 
+## **1.6.1 - 2026-09-21**
+
+- **The Lightroom destination and stack-input folder no longer have to be different.** The GUI used to refuse to start if you pointed both at the same folder. Pointing them at the same place is a fine way to use Stackcopy as a plain, reorganizing photo importer: stack inputs and everything else land in the same dated folders, and stacked outputs still get their renamed " stacked" suffix.
+- **Fixed ExifTool not being found on macOS even when it was installed.** A Stackcopy.app launched from Finder does not inherit the shell's PATH, so a Homebrew ExifTool (Apple Silicon's `/opt/homebrew/bin` or Intel's `/usr/local/bin`) or a MacPorts one (`/opt/local/bin`) was invisible even though it worked fine from Terminal. Stackcopy now checks those known install locations directly when PATH lookup comes up empty.
+- **When more than one ExifTool is found, Stackcopy now uses the most capable one** instead of stopping at the first one it finds, so a newer install is no longer shadowed by an older one found earlier.
+
 ## **1.6.0**
 
 - **The GUI now shows every folder your photos will go into.** If a card holds photos from more than one day, each day gets its own dated folder. The GUI used to show only the newest one. It now says how many dates and folders there are, and you can click to see the full list before you import.

@@ -389,6 +389,160 @@ class DiscoverySelectionTests(unittest.TestCase):
         self.assertIn("STACKCOPY_EXIFTOOL", info.error or "")
         self.assertEqual(fake.calls, [])
 
+    def test_macos_falls_back_to_homebrew_when_path_lookup_fails(self):
+        # A Stackcopy.app launched from Finder inherits launchd's PATH, not
+        # the Terminal's, so an ExifTool installed via Homebrew (or the
+        # official exiftool.org pkg) is invisible to shutil.which even
+        # though it works from a shell. Discovery must still find it.
+        real_isfile = os.path.isfile
+        real_access = os.access
+
+        def isfile(path):
+            return path == "/opt/homebrew/bin/exiftool" or real_isfile(path)
+
+        def access(path, mode):
+            return path == "/opt/homebrew/bin/exiftool" or real_access(path, mode)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(stackcopy, "IS_MACOS", True))
+            stack.enter_context(mock.patch.object(os.path, "isfile", isfile))
+            stack.enter_context(mock.patch.object(os, "access", access))
+            info, fake = discover(bundled=None, which=None)
+
+        self.assertEqual(info.executable, "/opt/homebrew/bin/exiftool")
+        self.assertEqual(info.source, stackcopy.ExifToolSource.PATH)
+        self.assertEqual(fake.calls[0][0], "/opt/homebrew/bin/exiftool")
+
+    def test_no_macos_fallback_off_macos(self):
+        with mock.patch.object(stackcopy, "IS_MACOS", False):
+            self.assertEqual(stackcopy._fallback_exiftool_paths(), ())
+
+    def test_macos_fallback_also_checks_macports(self):
+        with mock.patch.object(stackcopy, "IS_MACOS", True):
+            self.assertIn(
+                "/opt/local/bin/exiftool", stackcopy._fallback_exiftool_paths()
+            )
+
+    def test_the_newest_of_several_installs_is_used(self):
+        # An old system-wide exiftool sits on PATH (12.40, too old for OM-1
+        # stacks) while a newer Homebrew install (13.59) is only reachable by
+        # the macOS fallback paths. Discovery should prefer the one that
+        # actually works better, not just the first one found.
+        def run(command, **kwargs):
+            executable = command[0]
+            version = {
+                "/usr/bin/exiftool": "12.40\n",
+                "/opt/homebrew/bin/exiftool": "13.59\n",
+            }[executable]
+            return SimpleNamespace(returncode=0, stdout=version, stderr="")
+
+        def isfile(path):
+            return path == "/opt/homebrew/bin/exiftool"
+
+        def access(path, mode):
+            return path == "/opt/homebrew/bin/exiftool"
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.dict(os.environ, {"STACKCOPY_EXIFTOOL": ""}, clear=False)
+            )
+            stack.enter_context(mock.patch.object(stackcopy, "IS_MACOS", True))
+            stack.enter_context(
+                mock.patch.object(
+                    stackcopy, "_bundled_exiftool_path", return_value=None
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    stackcopy.shutil, "which", return_value="/usr/bin/exiftool"
+                )
+            )
+            stack.enter_context(mock.patch.object(os.path, "isfile", isfile))
+            stack.enter_context(mock.patch.object(os, "access", access))
+            stack.enter_context(mock.patch.object(stackcopy.subprocess, "run", run))
+            info = stackcopy._discover_exiftool()
+
+        self.assertEqual(info.executable, "/opt/homebrew/bin/exiftool")
+        self.assertEqual(info.version, "13.59")
+        self.assertTrue(info.supports_om_system_makernotes)
+
+    def test_a_tie_prefers_the_path_result_over_a_fallback_path(self):
+        def run(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="13.59\n", stderr="")
+
+        real_isfile = os.path.isfile
+        real_access = os.access
+
+        def isfile(path):
+            return path == "/opt/homebrew/bin/exiftool" or real_isfile(path)
+
+        def access(path, mode):
+            return path == "/opt/homebrew/bin/exiftool" or real_access(path, mode)
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.dict(os.environ, {"STACKCOPY_EXIFTOOL": ""}, clear=False)
+            )
+            stack.enter_context(mock.patch.object(stackcopy, "IS_MACOS", True))
+            stack.enter_context(
+                mock.patch.object(
+                    stackcopy, "_bundled_exiftool_path", return_value=None
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    stackcopy.shutil, "which", return_value="/usr/bin/exiftool"
+                )
+            )
+            stack.enter_context(mock.patch.object(os.path, "isfile", isfile))
+            stack.enter_context(mock.patch.object(os, "access", access))
+            stack.enter_context(mock.patch.object(stackcopy.subprocess, "run", run))
+            info = stackcopy._discover_exiftool()
+
+        self.assertEqual(info.executable, "/usr/bin/exiftool")
+
+    def test_a_broken_candidate_does_not_shadow_a_working_one(self):
+        # PATH finds an install that can't actually run; the macOS fallback
+        # finds one that works. The working one must win even though it was
+        # found second.
+        def run(command, **kwargs):
+            executable = command[0]
+            if executable == "/usr/bin/exiftool":
+                raise OSError(8, "Exec format error")
+            return SimpleNamespace(returncode=0, stdout="13.59\n", stderr="")
+
+        real_isfile = os.path.isfile
+        real_access = os.access
+
+        def isfile(path):
+            return path == "/opt/homebrew/bin/exiftool" or real_isfile(path)
+
+        def access(path, mode):
+            return path == "/opt/homebrew/bin/exiftool" or real_access(path, mode)
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.dict(os.environ, {"STACKCOPY_EXIFTOOL": ""}, clear=False)
+            )
+            stack.enter_context(mock.patch.object(stackcopy, "IS_MACOS", True))
+            stack.enter_context(
+                mock.patch.object(
+                    stackcopy, "_bundled_exiftool_path", return_value=None
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    stackcopy.shutil, "which", return_value="/usr/bin/exiftool"
+                )
+            )
+            stack.enter_context(mock.patch.object(os.path, "isfile", isfile))
+            stack.enter_context(mock.patch.object(os, "access", access))
+            stack.enter_context(mock.patch.object(stackcopy.subprocess, "run", run))
+            info = stackcopy._discover_exiftool()
+
+        self.assertEqual(info.executable, "/opt/homebrew/bin/exiftool")
+        self.assertTrue(info.available)
+
     def test_the_bundled_lookup_finds_a_frozen_payload(self):
         import tempfile
 
@@ -719,8 +873,8 @@ class GuiStatusHelperTests(unittest.TestCase):
 
 
 class VersionVisibilityTests(unittest.TestCase):
-    def test_the_version_is_still_1_6_0(self):
-        self.assertEqual(stackcopy.STACKCOPY_VERSION, "1.6.0")
+    def test_the_version_is_still_1_6_1(self):
+        self.assertEqual(stackcopy.STACKCOPY_VERSION, "1.6.1")
 
     def test_the_gui_does_not_hard_code_its_own_copy(self):
         self.assertEqual(gui.STACKCOPY_VERSION, stackcopy.STACKCOPY_VERSION)
@@ -782,26 +936,26 @@ class VersionVisibilityTests(unittest.TestCase):
         completed = self.run_cli(["--version"])
 
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(completed.stdout.strip(), "Stackcopy 1.6.0")
+        self.assertEqual(completed.stdout.strip(), "Stackcopy 1.6.1")
 
     def test_help_shows_the_version(self):
         completed = self.run_cli(["--help"])
 
         self.assertEqual(completed.returncode, 0)
-        self.assertIn("Stackcopy 1.6.0", completed.stdout)
+        self.assertIn("Stackcopy 1.6.1", completed.stdout)
 
     def test_no_operation_shows_the_version_with_the_help(self):
         completed = self.run_cli([])
 
         self.assertEqual(completed.returncode, 1)
-        self.assertIn("Stackcopy 1.6.0", completed.stdout + completed.stderr)
+        self.assertIn("Stackcopy 1.6.1", completed.stdout + completed.stderr)
 
     def test_startup_identifies_itself_on_stderr(self):
         completed = self.run_cli(["--dry-run", "--rename", str(ROOT)])
 
-        self.assertIn("Stackcopy 1.6.0", completed.stderr)
+        self.assertIn("Stackcopy 1.6.1", completed.stderr)
         # stdout stays clean for pipes.
-        self.assertNotIn("Stackcopy 1.6.0", completed.stdout)
+        self.assertNotIn("Stackcopy 1.6.1", completed.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -850,8 +1004,8 @@ class PlanJsonPurityTests(unittest.TestCase):
     def test_the_version_banner_never_reaches_stdout(self):
         completed = self.plan()
 
-        self.assertNotIn("Stackcopy 1.6.0", completed.stdout)
-        self.assertIn("Stackcopy 1.6.0", completed.stderr)
+        self.assertNotIn("Stackcopy 1.6.1", completed.stdout)
+        self.assertIn("Stackcopy 1.6.1", completed.stderr)
 
     def test_exiftool_warnings_never_reach_stdout(self):
         completed = self.plan(environment={"STACKCOPY_EXIFTOOL": "/nowhere/exiftool"})
@@ -865,7 +1019,7 @@ class PlanJsonPurityTests(unittest.TestCase):
         completed = self.plan()
         payload = json.loads(completed.stdout)
 
-        self.assertEqual(payload["stackcopy_version"], "1.6.0")
+        self.assertEqual(payload["stackcopy_version"], "1.6.1")
         self.assertIn(
             payload["exiftool_status"],
             {"om_system_supported", "too_old", "missing", "unusable"},

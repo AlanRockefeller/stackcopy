@@ -409,10 +409,6 @@ def source_inside_destination_error(
     return None
 
 
-def destinations_are_same(first: str, second: str) -> bool:
-    return path_is_within(first, second) and path_is_within(second, first)
-
-
 def parse_low_space_report(line: str) -> dict[str, object] | None:
     try:
         payload = json.loads(line[len(LOW_SPACE_SENTINEL) :].strip())
@@ -1634,12 +1630,6 @@ class StackcopyGUI(ctk.CTk):
             return None
         if not lightroom or not stack_input:
             messagebox.showerror("Stackcopy", "Please choose both destination folders.")
-            return None
-        if destinations_are_same(lightroom, stack_input):
-            messagebox.showerror(
-                "Stackcopy",
-                "The Lightroom destination and stack-input folder must be different.",
-            )
             return None
         nested_error = source_inside_destination_error(source, lightroom, stack_input)
         if nested_error:

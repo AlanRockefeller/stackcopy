@@ -32,7 +32,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-# The version Stackcopy 1.6.0 is tested against.  Bumping this means bumping
+# The version Stackcopy 1.6.1 is tested against.  Bumping this means bumping
 # the checksum in the same commit; there is no "latest" lookup on purpose.
 EXIFTOOL_VERSION = "13.59"
 ARCHIVE_NAME = f"exiftool-{EXIFTOOL_VERSION}_64.zip"
