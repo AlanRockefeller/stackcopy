@@ -436,14 +436,11 @@ class DiscoverySelectionTests(unittest.TestCase):
             }[executable]
             return SimpleNamespace(returncode=0, stdout=version, stderr="")
 
-        real_isfile = os.path.isfile
-        real_access = os.access
-
         def isfile(path):
-            return path == "/opt/homebrew/bin/exiftool" or real_isfile(path)
+            return path == "/opt/homebrew/bin/exiftool"
 
         def access(path, mode):
-            return path == "/opt/homebrew/bin/exiftool" or real_access(path, mode)
+            return path == "/opt/homebrew/bin/exiftool"
 
         with ExitStack() as stack:
             stack.enter_context(

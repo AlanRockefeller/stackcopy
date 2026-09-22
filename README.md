@@ -197,7 +197,8 @@ pyinstaller packaging/stackcopy_gui.spec
 `fetch_exiftool.py` downloads a pinned ExifTool release, verifies its SHA-256,
 and fails rather than bundling anything unexpected. It is a no-op off Windows.
 Skipping it still produces a working build; the app just uses ExifTool from
-`PATH` and says so.
+`PATH` and says so - on macOS it also falls back to the Homebrew and MacPorts
+locations below when `PATH` doesn't have it.
 
 PyInstaller can't cross-compile, so build the macOS app on a Mac and the
 Windows app on Windows, or just let the workflow do both.
@@ -483,7 +484,7 @@ shadow a newer install elsewhere.
 | ------------------------------------- | -------------------------------------------------------------------- |
 | **Windows** (`stackcopy-windows.zip`) | **Bundled** - ExifTool 13.59 ships inside the app, nothing to install |
 | **macOS** (`Stackcopy.dmg`)           | **Not bundled** - install it yourself (`brew install exiftool`)       |
-| Running from source (CLI or GUI)      | Uses ExifTool from your `PATH`                                        |
+| Running from source (CLI or GUI)      | Uses ExifTool from your `PATH` (macOS also checks `/opt/homebrew/bin`, `/usr/local/bin`, and `/opt/local/bin`) |
 
 The Windows bundle is fetched at build time from a pinned release whose
 SHA-256 is verified; a mismatch fails the build. macOS is deliberately left
