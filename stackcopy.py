@@ -29,7 +29,7 @@ from datetime import datetime, date, timedelta
 from enum import Enum
 from typing import Any
 
-STACKCOPY_VERSION = "1.6.0"
+STACKCOPY_VERSION = "1.6.1"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -2336,7 +2336,7 @@ def format_action_message(
 # StackedImage tag is unreadable below this.
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION = (12, 41)
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT = "12.41"
-# The version Stackcopy 1.6.0 is tested against and ships with its packaged
+# The version Stackcopy 1.6.1 is tested against and ships with its packaged
 # GUI builds.  Newer is fine; this is a known-good floor for "recommended",
 # never a requirement, and Stackcopy never checks the internet for it.
 EXIFTOOL_RECOMMENDED_VERSION_TEXT = "13.59"
@@ -2518,6 +2518,50 @@ def _bundled_exiftool_path() -> str | None:
     return None
 
 
+def _fallback_exiftool_paths() -> tuple[str, ...]:
+    """Fixed install locations to check alongside ``PATH``.
+
+    A macOS app launched from Finder (including a packaged Stackcopy.app)
+    inherits launchd's minimal PATH, not the shell's - so a Homebrew or
+    MacPorts ``exiftool`` is invisible even though it runs fine from
+    Terminal.  Apple Silicon Homebrew installs to /opt/homebrew/bin; Intel
+    Homebrew and the official exiftool.org installer both use
+    /usr/local/bin; MacPorts uses /opt/local/bin.
+
+    Windows and Linux are not covered here on purpose. Every common install
+    method there already lands on PATH: apt/dnf/pacman use /usr/bin,
+    Chocolatey and Scoop add their own shims to PATH, and ExifTool's own
+    Windows instructions say to drop exiftool.exe into C:\\Windows, which is
+    always on PATH. A packaged Windows build also ships its own bundled
+    ExifTool (see packaging/fetch_exiftool.py), so PATH gaps do not matter
+    there either.
+    """
+    if not IS_MACOS:
+        return ()
+    return (
+        "/opt/homebrew/bin/exiftool",
+        "/usr/local/bin/exiftool",
+        "/opt/local/bin/exiftool",
+    )
+
+
+def _candidate_exiftool_executables() -> tuple[str, ...]:
+    """Every unbundled ExifTool worth asking about, PATH first, deduplicated."""
+    seen: set[str] = set()
+    candidates: list[str] = []
+    on_path = shutil.which("exiftool")
+    if on_path and on_path not in seen:
+        candidates.append(on_path)
+        seen.add(on_path)
+    for candidate in _fallback_exiftool_paths():
+        if candidate in seen:
+            continue
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            candidates.append(candidate)
+            seen.add(candidate)
+    return tuple(candidates)
+
+
 def _query_exiftool_version(
     executable: str,
 ) -> tuple[str | None, str | None, str | None]:
@@ -2552,34 +2596,8 @@ def _query_exiftool_version(
     return reported, None, notice
 
 
-def _discover_exiftool() -> ExifToolInfo:
-    """Locate ExifTool and ask it, once, what version it is."""
-    override = (os.environ.get("STACKCOPY_EXIFTOOL") or "").strip()
-    if override:
-        executable = shutil.which(override) or (
-            override if os.path.isfile(override) else None
-        )
-        source = ExifToolSource.OVERRIDE
-        if executable is None:
-            return ExifToolInfo(
-                None,
-                None,
-                None,
-                source,
-                f"STACKCOPY_EXIFTOOL points at '{override}', which is not an "
-                "executable",
-            )
-    else:
-        # A packaged build prefers the ExifTool it shipped with, which is a
-        # known-good version, over whatever happens to be on PATH.
-        executable = _bundled_exiftool_path()
-        source = ExifToolSource.BUNDLED
-        if executable is None:
-            executable = shutil.which("exiftool")
-            source = ExifToolSource.PATH
-    if executable is None:
-        return ExifToolInfo(None, None, None, ExifToolSource.NONE)
-
+def _build_exiftool_info(executable: str, source: ExifToolSource) -> ExifToolInfo:
+    """Run ``exiftool -ver`` on one candidate and build its ExifToolInfo."""
     reported, error, notice = _query_exiftool_version(executable)
     parsed = parse_exiftool_version(reported)
     if parsed is None and error is None:
@@ -2599,6 +2617,55 @@ def _discover_exiftool() -> ExifToolInfo:
     return ExifToolInfo(
         executable, version_text, parsed, source, error, library_text, library_tuple
     )
+
+
+def _best_exiftool_info(infos: list[ExifToolInfo]) -> ExifToolInfo:
+    """Pick the most capable candidate; when none work, explain the first one.
+
+    "Most capable" is the effective OM SYSTEM version, so a newer install
+    (say, a fresh Homebrew ExifTool) beats an older one found earlier (an
+    ancient one left on PATH from years ago) - but any working ExifTool beats
+    a broken one regardless of where it was found.
+    """
+    working = [(index, info) for index, info in enumerate(infos) if info.available]
+    if not working:
+        return infos[0]
+    _, best = max(
+        working,
+        key=lambda pair: (pair[1].effective_om_system_version or (0, 0), -pair[0]),
+    )
+    return best
+
+
+def _discover_exiftool() -> ExifToolInfo:
+    """Locate ExifTool and ask it, once, what version it is."""
+    override = (os.environ.get("STACKCOPY_EXIFTOOL") or "").strip()
+    if override:
+        executable = shutil.which(override) or (
+            override if os.path.isfile(override) else None
+        )
+        if executable is None:
+            return ExifToolInfo(
+                None,
+                None,
+                None,
+                ExifToolSource.OVERRIDE,
+                f"STACKCOPY_EXIFTOOL points at '{override}', which is not an "
+                "executable",
+            )
+        return _build_exiftool_info(executable, ExifToolSource.OVERRIDE)
+
+    # A packaged build prefers the ExifTool it shipped with, which is a
+    # known-good version, over whatever happens to be on PATH.
+    bundled = _bundled_exiftool_path()
+    if bundled is not None:
+        return _build_exiftool_info(bundled, ExifToolSource.BUNDLED)
+
+    candidates = _candidate_exiftool_executables()
+    if not candidates:
+        return ExifToolInfo(None, None, None, ExifToolSource.NONE)
+    infos = [_build_exiftool_info(path, ExifToolSource.PATH) for path in candidates]
+    return _best_exiftool_info(infos)
 
 
 # Resolved on first use and reused for the rest of the process: ExifTool is

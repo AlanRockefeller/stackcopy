@@ -272,6 +272,11 @@ When using `--lightroomimport`, stacked outputs, single-shot/focus-bracket photo
 
 Override with the `STACKCOPY_LIGHTROOM_IMPORT_DIR` environment variable.
 
+These two destinations can point at the same folder. Everything then lands
+together in one set of dated folders, which is a fine choice if you just want
+a single reorganized import folder rather than a separate stack-input
+archive - you still get renamed " stacked" outputs and preserved originals.
+
 The `YYYY/YYYY-MM-DD` directories are based on each file's filesystem modification time, not EXIF `DateTimeOriginal`. On a camera card, this modification time normally corresponds to when the photograph or video was captured.
 
 On Linux/WSL, `<Pictures>` is `~/pictures` if that directory exists, otherwise `~/Pictures`. On Windows, it's your system Pictures folder.
@@ -403,7 +408,7 @@ downloaded at runtime.
 ExifTool 12.41 (March 2022) is the release that added `OM SYSTEM` MakerNote
 support. Before it, ExifTool only knew the older `OLYMPUS` signature, so an
 OM-1's MakerNote block is unrecognized and the `StackedImage` tag simply never
-appears. That is a hard capability floor, not a preference. Stackcopy 1.6.0 is
+appears. That is a hard capability floor, not a preference. Stackcopy 1.6.1 is
 tested against **ExifTool 13.59**, and newer is always fine.
 
 ### Why it matters
@@ -434,7 +439,7 @@ present, the heuristic is usually right.
 
 ```bash
 exiftool -ver          # your ExifTool, e.g. 13.59
-./stackcopy.py --version   # Stackcopy 1.6.0
+./stackcopy.py --version   # Stackcopy 1.6.1
 ```
 
 Every Lightroom-mode run also says so itself, on stderr, before it starts
@@ -457,12 +462,20 @@ irrelevant to them.
 
 ### Installing it
 
-- **macOS**: `brew install exiftool`
+- **macOS**: `brew install exiftool` (or MacPorts' `port install exiftool`, or
+  the `.pkg` installer from <https://exiftool.org/>). A GUI app launched from
+  Finder does not inherit your shell's `PATH`, so Stackcopy also checks
+  Homebrew's and MacPorts' install locations directly - no restart trick or
+  `PATH` edit needed after installing.
 - **Linux**: `apt install libimage-exiftool-perl` (or your distro's package).
   Check the version; some distributions ship a release older than 12.41.
 - **Windows**: download the package from <https://exiftool.org/>, rename
   `exiftool(-k).exe` to `exiftool.exe`, keep the `exiftool_files` folder beside
   it, and put both somewhere on your `PATH`.
+
+If more than one ExifTool is reachable, Stackcopy uses the most capable one it
+finds rather than just the first one, so an old copy left on `PATH` does not
+shadow a newer install elsewhere.
 
 ### Packaged GUI builds
 
@@ -483,8 +496,10 @@ Either way the GUI shows what it found in its header, and offers a link to
 downloads or installs anything by itself.
 
 Set `STACKCOPY_EXIFTOOL=/path/to/exiftool` to point Stackcopy at a specific
-build; a packaged app otherwise prefers the one it shipped with, and everything
-else uses `PATH`.
+build; a packaged app otherwise prefers the one it shipped with. Everything
+else is found via `PATH`, plus - on macOS only - Homebrew's and MacPorts'
+install locations, which are checked directly since a Finder-launched app does
+not inherit the shell's `PATH`.
 
 ## Safety and recovery
 
@@ -555,8 +570,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.6.0
-- **Date**: August 24, 2026
+- **Version**: 1.6.1
+- **Date**: September 21, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

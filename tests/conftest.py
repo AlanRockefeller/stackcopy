@@ -2,7 +2,7 @@
 
 ExifTool discovery is cached for the life of the process and answers
 differently on every developer's machine, so the suite pins it: each test
-starts from the version Stackcopy 1.6.0 is tested against, and any test that
+starts from the version Stackcopy 1.6.1 is tested against, and any test that
 cares about a different one patches it explicitly.  No test needs a real
 ExifTool installed.
 """
