@@ -176,7 +176,8 @@ python stackcopy_gui.py
 
 The only extra dependency is `customtkinter`. If you get a `tkinter` import
 error, install Tk for your platform (`brew install python-tk` on macOS, or your
-distro's `python3-tk` package on Linux; it's already included on Windows).
+distro's Tk package on Linux — `python3-tk` on Debian/Ubuntu,
+`python3-tkinter` on Fedora, `tk` on Arch; it's already included on Windows).
 
 ### Build the app yourself
 

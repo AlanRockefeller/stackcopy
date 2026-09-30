@@ -441,5 +441,69 @@ class TerminalSummaryTests(unittest.TestCase):
         self.assertEqual(parsed, {"problems": 0, "imported": 348})
 
 
+class CardDetectionTests(unittest.TestCase):
+    MOUNTS = (
+        "/dev/nvme0n1p5 /boot vfat rw 0 0\n"
+        "/dev/mmcblk0p1 /run/media/alan/OM\\040SYSTEM exfat rw 0 0\n"
+        "server:/share /mnt/photos nfs4 rw 0 0\n"
+        "/dev/sdb1 /media/usb vfat rw 0 0\n"
+        "C:\\134 /mnt/c 9p rw 0 0\n"
+        "portal /run/user/1000/doc fuse.portal rw 0 0\n"
+    )
+
+    def test_linux_candidates_are_removable_mounts_with_decoded_names(self):
+        self.assertEqual(
+            gui._linux_card_candidates(self.MOUNTS),
+            ["/run/media/alan/OM SYSTEM", "/media/usb", "/mnt/c"],
+        )
+
+    def test_inserted_card_replaces_a_remembered_non_card_folder(self):
+        with mock.patch.object(gui, "path_is_within", lambda p, r: p.startswith(r)):
+            self.assertEqual(
+                gui.choose_startup_source("/home/me/old", ["/media/CARD"]),
+                "/media/CARD",
+            )
+            self.assertEqual(
+                gui.choose_startup_source("/media/CARD/DCIM", ["/media/CARD"]),
+                "/media/CARD/DCIM",
+            )
+            self.assertEqual(gui.choose_startup_source("/home/me/old", []), "/home/me/old")
+            self.assertEqual(gui.choose_startup_source("", []), "")
+
+    def test_find_camera_cards_requires_a_dcim_folder(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as root:
+            card = Path(root, "card")
+            (card / "DCIM").mkdir(parents=True)
+            disk = Path(root, "disk")
+            disk.mkdir()
+            with mock.patch.object(gui.os, "name", "posix"), mock.patch.object(
+                gui.sys, "platform", "linux"
+            ), mock.patch.object(
+                gui, "_linux_card_candidates", return_value=[str(card), str(disk)]
+            ), mock.patch("builtins.open", mock.mock_open(read_data="")):
+                self.assertEqual(gui.find_camera_cards(), [str(card)])
+
+
+class DisplayScaleTests(unittest.TestCase):
+    def test_override_then_gdk_then_qt_then_xft(self):
+        self.assertEqual(
+            gui.linux_display_scale({"STACKCOPY_UI_SCALE": "1.5", "GDK_SCALE": "2"}),
+            1.5,
+        )
+        self.assertEqual(gui.linux_display_scale({"GDK_SCALE": "2"}), 2.0)
+        self.assertEqual(
+            gui.linux_display_scale({"GDK_SCALE": "2", "GDK_DPI_SCALE": "0.75"}), 1.5
+        )
+        self.assertEqual(gui.linux_display_scale({"QT_SCALE_FACTOR": "1.25"}), 1.25)
+        self.assertEqual(gui.linux_display_scale({}, "Xft.dpi:\t192\n"), 2.0)
+        self.assertEqual(gui.linux_display_scale({}), 1.0)
+
+    def test_nonsense_hints_are_ignored(self):
+        self.assertEqual(gui.linux_display_scale({"GDK_SCALE": "banana"}), 1.0)
+        self.assertEqual(gui.linux_display_scale({"GDK_SCALE": "0"}), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

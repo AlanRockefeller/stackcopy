@@ -86,6 +86,7 @@ APP_NAME = "Stackcopy"
 # stackcopy module failed to load, in which case there is no version to show.
 APP_TITLE = f"{APP_NAME} {STACKCOPY_VERSION}".strip()
 SETTINGS_FILENAME = "gui-state.json"
+CARD_POLL_MS = 2000
 MOVE_MODE = "Move off the card"
 COPY_MODE = "Copy, leave card untouched"
 
@@ -619,6 +620,181 @@ def volume_label(path: str) -> str | None:
         return None
 
 
+# Filesystems that are never a camera card, and that can stall a stat() for
+# seconds when the server is away.  WSL's drvfs/9p bridge is allowed through
+# because a card reader on Windows shows up that way as /mnt/<letter>.
+_NON_CARD_FSTYPES = frozenset(
+    {
+        "nfs",
+        "nfs4",
+        "cifs",
+        "smb3",
+        "smbfs",
+        "fuse.sshfs",
+        "sshfs",
+        "fuse.rclone",
+        "davfs",
+        "fuse.portal",
+        "afs",
+        "ceph",
+        "glusterfs",
+    }
+)
+
+
+def _has_dcim(root: str) -> bool:
+    try:
+        with os.scandir(root) as entries:
+            return any(
+                entry.name.upper() == "DCIM" and entry.is_dir() for entry in entries
+            )
+    except OSError:
+        return False
+
+
+def _unescape_mount_field(field: str) -> str:
+    """Decode the octal escapes (``\\040`` for a space) /proc/mounts uses."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _linux_card_candidates(mounts_text: str) -> list[str]:
+    candidates: list[str] = []
+    for line in mounts_text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        target = _unescape_mount_field(fields[1])
+        fstype = fields[2]
+        if fstype in _NON_CARD_FSTYPES:
+            continue
+        if target.startswith(("/run/media/", "/media/")) or re.match(
+            r"^/mnt/[A-Za-z0-9_.-]+$", target
+        ):
+            candidates.append(target)
+    return candidates
+
+
+def _windows_card_candidates() -> list[str]:
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # Suppress "There is no disk in the drive" dialogs from empty readers.
+        previous = kernel32.SetErrorMode(0x0001 | 0x8000)
+        try:
+            mask = kernel32.GetLogicalDrives()
+            roots = []
+            for index in range(26):
+                if not mask & (1 << index):
+                    continue
+                root = f"{chr(ord('A') + index)}:\\"
+                # 2 = removable, 3 = fixed (some USB card readers report fixed).
+                if kernel32.GetDriveTypeW(root) in (2, 3) and index >= 2:
+                    roots.append(root)
+            return roots
+        finally:
+            kernel32.SetErrorMode(previous)
+    except (AttributeError, OSError):
+        return []
+
+
+def find_camera_cards() -> list[str]:
+    """Mounted volumes that look like a camera card (a ``DCIM`` folder at the root).
+
+    Best effort and never raises: an empty list simply means the user picks
+    the card by hand, exactly as before.
+    """
+    try:
+        if os.name == "nt":
+            candidates = _windows_card_candidates()
+        elif sys.platform == "darwin":
+            try:
+                candidates = [entry.path for entry in os.scandir("/Volumes")]
+            except OSError:
+                candidates = []
+        else:
+            try:
+                with open("/proc/self/mounts", encoding="utf-8") as handle:
+                    candidates = _linux_card_candidates(handle.read())
+            except OSError:
+                candidates = []
+        seen: set[str] = set()
+        cards: list[str] = []
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if _has_dcim(candidate):
+                cards.append(candidate)
+        return sorted(cards, key=str.casefold)
+    except Exception:
+        return []
+
+
+def choose_startup_source(saved: str, cards: list[str]) -> str:
+    """The folder to show at startup: an inserted card beats a remembered path.
+
+    A remembered folder that is on (or is) one of the inserted cards is kept,
+    so a deliberately chosen DCIM subfolder survives a restart.  Otherwise the
+    window is called "Import from card", so a card that is plugged in is what
+    the user almost certainly wants.
+    """
+    saved = saved.strip()
+    if saved and any(path_is_within(saved, card) for card in cards):
+        return saved
+    if cards:
+        return cards[0]
+    return saved
+
+
+def linux_display_scale(env: dict[str, str] | None = None, xft_dpi: str = "") -> float:
+    """HiDPI scale for X11/XWayland, where Tk and customtkinter see 96 DPI.
+
+    Windows and macOS report scaling to Tk themselves.  On Linux the desktop
+    advertises it through the same hints GTK and Qt apps follow; Hyprland
+    (Omarchy), for example, sets ``GDK_SCALE=2`` with XWayland's own scaling
+    turned off, so an unscaled Tk window is half-size on a 4K panel.
+    ``STACKCOPY_UI_SCALE`` overrides everything.
+    """
+    env = os.environ if env is None else env
+
+    def number(value: str | None) -> float | None:
+        try:
+            parsed = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if 0.5 <= parsed <= 4.0 else None
+
+    override = number(env.get("STACKCOPY_UI_SCALE"))
+    if override:
+        return override
+    gdk = number(env.get("GDK_SCALE"))
+    if gdk:
+        return gdk * (number(env.get("GDK_DPI_SCALE")) or 1.0)
+    qt = number(env.get("QT_SCALE_FACTOR"))
+    if qt:
+        return qt
+    match = re.search(r"Xft\.dpi:\s*([0-9.]+)", xft_dpi)
+    if match:
+        dpi = number(str(float(match.group(1)) / 96.0))
+        if dpi:
+            return dpi
+    return 1.0
+
+
+def _read_xft_dpi() -> str:
+    try:
+        return subprocess.run(
+            ["xrdb", "-query"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
@@ -673,7 +849,12 @@ class StackcopyGUI(ctk.CTk):
         # survive every save instead of being dropped on the next write.
         saved = load_gui_state()
         self._state: dict[str, object] = dict(saved)
-        self.src_var = ctk.StringVar(value=state_text(saved, "source_dir"))
+        cards = find_camera_cards()
+        self._known_cards = set(cards)
+        self._card_poll_busy = False
+        self.src_var = ctk.StringVar(
+            value=choose_startup_source(state_text(saved, "source_dir"), cards)
+        )
         self.dst_var = ctk.StringVar(
             value=state_text(saved, "lightroom_dir", lightroom_default)
         )
@@ -717,6 +898,7 @@ class StackcopyGUI(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_queue)
         self.after(150, self._schedule_plan_scan)
+        self.after(CARD_POLL_MS, self._poll_cards)
         self._refresh_idle_plan()
         self._schedule_automatic_update_check()
 
@@ -1308,9 +1490,57 @@ class StackcopyGUI(ctk.CTk):
 
     def _browse(self, variable: ctk.StringVar, title: str) -> None:
         start = variable.get() or os.path.expanduser("~")
-        chosen = filedialog.askdirectory(initialdir=start, title=title)
+        if sys.platform.startswith("linux"):
+            # Tk's own X11 folder picker opens barely three rows tall; give it
+            # room to browse (it is modal, so this runs from its event loop).
+            self.after(60, self._enlarge_folder_dialog)
+        chosen = filedialog.askdirectory(parent=self, initialdir=start, title=title)
         if chosen:
             variable.set(chosen)
+
+    def _poll_cards(self) -> None:
+        """Watch for a card being inserted while the window is open."""
+        if self._closing:
+            return
+        if not self._card_poll_busy:
+            self._card_poll_busy = True
+
+            def scan() -> None:
+                self._queue.put(("cards", find_camera_cards()))
+
+            threading.Thread(target=scan, daemon=True).start()
+        self.after(CARD_POLL_MS, self._poll_cards)
+
+    def _handle_cards(self, cards: list[str]) -> None:
+        self._card_poll_busy = False
+        inserted = [card for card in cards if card not in self._known_cards]
+        self._known_cards = set(cards)
+        if not inserted or self._running:
+            return
+        source = self.src_var.get().strip()
+        if any(path_is_within(source, card) for card in inserted):
+            return
+        self.src_var.set(inserted[0])
+
+    def _enlarge_folder_dialog(self, attempts: int = 10) -> None:
+        # The dialog is built in Tcl, so tkinter has no widget object for it.
+        dialog = ".__tk_choosedir"
+        try:
+            exists = bool(int(self.tk.call("winfo", "exists", dialog)))
+        except Exception:
+            return
+        if not exists:
+            if attempts > 0:
+                self.after(60, lambda: self._enlarge_folder_dialog(attempts - 1))
+            return
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self)
+            width, height = round(640 * scale), round(480 * scale)
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 3)
+            self.tk.call("wm", "geometry", dialog, f"{width}x{height}+{x}+{y}")
+        except Exception:
+            pass
 
     def _on_path_changed(self) -> None:
         self._schedule_save()
@@ -1793,6 +2023,8 @@ class StackcopyGUI(ctk.CTk):
                     )
                 elif kind == "update":
                     self._handle_update_result(payload)
+                elif kind == "cards":
+                    self._handle_cards(payload)
                 elif kind == "done":
                     self._handle_done(int(payload))
         except queue.Empty:
@@ -2490,7 +2722,22 @@ class StackcopyGUI(ctk.CTk):
 def main() -> None:
     ctk.set_appearance_mode("system")
     ctk.set_default_color_theme("blue")
-    StackcopyGUI().mainloop()
+    scale = 1.0
+    if sys.platform.startswith("linux"):
+        scale = linux_display_scale(xft_dpi=_read_xft_dpi())
+        if scale != 1.0:
+            ctk.set_widget_scaling(scale)
+            ctk.set_window_scaling(scale)
+    app = StackcopyGUI()
+    if scale != 1.0:
+        # customtkinter scales its own widgets, but the Tk folder picker and
+        # message boxes use Tk's point-sized fonts, which follow "tk scaling".
+        try:
+            current = float(app.tk.call("tk", "scaling"))
+            app.tk.call("tk", "scaling", current * scale)
+        except Exception:
+            pass
+    app.mainloop()
 
 
 if __name__ == "__main__":

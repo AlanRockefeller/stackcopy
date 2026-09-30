@@ -34,6 +34,7 @@ class DependencyMessageTests(unittest.TestCase):
         self.assertIn("Python's Tk GUI support", message)
         self.assertIn("sudo apt install python3-tk", message)
         self.assertIn("sudo dnf install python3-tkinter", message)
+        self.assertIn("sudo pacman -S tk", message)
 
     def test_missing_low_level_tk_binding_gets_tk_instructions(self):
         error = ModuleNotFoundError("No module named '_tkinter'", name="_tkinter")
