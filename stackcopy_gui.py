@@ -123,6 +123,38 @@ def cli_command(cli_args: list[str]) -> tuple[list[str], dict[str, str]]:
     return [sys.executable, os.path.join(here, "stackcopy.py"), *cli_args], env
 
 
+def folder_opener_environment() -> dict[str, str]:
+    """Let desktop apps use system Python rather than Stackcopy's venv."""
+    env = os.environ.copy()
+    venv_roots = {env.get("VIRTUAL_ENV", "")}
+    if sys.prefix != sys.base_prefix:
+        venv_roots.update((sys.prefix, sys.exec_prefix))
+    venv_bins = {
+        os.path.normcase(os.path.abspath(os.path.join(root, "bin")))
+        for root in venv_roots if root
+    }
+    if "PATH" in env:
+        # Keep all unrelated entries, including the desktop session's tools.
+        env["PATH"] = os.pathsep.join(
+            entry for entry in env["PATH"].split(os.pathsep)
+            if os.path.normcase(os.path.abspath(entry)) not in venv_bins
+        )
+    for key in (
+        "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE",
+        "__PYVENV_LAUNCHER__",
+    ):
+        env.pop(key, None)
+    if getattr(sys, "frozen", False) and sys.platform.startswith("linux"):
+        # PyInstaller prepends its bundled libraries for its own processes.
+        # Restore the system search path only in this external app's copy.
+        original = env.get("LD_LIBRARY_PATH_ORIG")
+        if original:
+            env["LD_LIBRARY_PATH"] = original
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def parse_progress(line: str) -> tuple[dict[str, str], str | None]:
     """Parse a progress sentinel, including percent-escaped display fields."""
     body = line[len(PROGRESS_SENTINEL) :].strip()
@@ -172,7 +204,7 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
     ):
         return None
     normalized["source_subdirs_scanned"] = subdirs
-    for field in ("dest_dirs", "dest_dates"):
+    for field in ("dest_dirs", "dest_dates", "dest_lightroom_dates", "dest_stack_input_dates"):
         # Older CLIs do not send these; an absent list simply means the GUI
         # falls back to showing the headline destination on its own.
         value = normalized.get(field, [])
@@ -182,6 +214,29 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
             return None
         normalized[field] = value
     return normalized
+
+
+def update_plan_destinations(
+    plan: dict[str, object], lightroom_dir: str, stack_input_dir: str
+) -> dict[str, object]:
+    """Rebuild preview paths from cached dates without reading the source."""
+    updated = dict(plan)
+
+    def dated_path(root: str, date: str) -> str:
+        return os.path.join(root, date[:4], date) if date else root
+
+    newest = str(plan.get("newest_date") or "")
+    updated["dest_lightroom"] = dated_path(lightroom_dir, newest)
+    updated["dest_stack_input"] = dated_path(stack_input_dir, newest)
+    updated["dest_dirs"] = sorted({
+        dated_path(root, date)
+        for root, field in (
+            (lightroom_dir, "dest_lightroom_dates"),
+            (stack_input_dir, "dest_stack_input_dates"),
+        )
+        for date in plan.get(field, [])
+    })
+    return updated
 
 
 def exiftool_status_display(
@@ -893,8 +948,8 @@ class StackcopyGUI(ctk.CTk):
         self.after_idle(self._update_body_scrollbar)
 
         self.src_var.trace_add("write", lambda *_: self._on_path_changed())
-        self.dst_var.trace_add("write", lambda *_: self._on_path_changed())
-        self.stk_var.trace_add("write", lambda *_: self._on_path_changed())
+        self.dst_var.trace_add("write", lambda *_: self._on_destination_changed())
+        self.stk_var.trace_add("write", lambda *_: self._on_destination_changed())
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_queue)
         self.after(150, self._schedule_plan_scan)
@@ -1554,6 +1609,14 @@ class StackcopyGUI(ctk.CTk):
         self._schedule_save()
         self._refresh_idle_plan()
 
+    def _on_destination_changed(self) -> None:
+        self._schedule_save()
+        if self._plan is not None:
+            self._plan = update_plan_destinations(
+                self._plan, self.dst_var.get().strip(), self.stk_var.get().strip()
+            )
+        self._refresh_idle_plan()
+
     def _on_detection_changed(self) -> None:
         self._schedule_save()
         self._plan_generation += 1
@@ -1790,7 +1853,12 @@ class StackcopyGUI(ctk.CTk):
         )
 
     def _apply_plan(self, payload: dict[str, object] | None) -> None:
-        self._plan = payload
+        self._plan = (
+            update_plan_destinations(
+                payload, self.dst_var.get().strip(), self.stk_var.get().strip()
+            )
+            if payload is not None else None
+        )
         self._refresh_exiftool_status()
         self._set_plan_scanning(False)
         if payload is None:
@@ -2383,9 +2451,9 @@ class StackcopyGUI(ctk.CTk):
             if os.name == "nt":
                 os.startfile(path)  # type: ignore[attr-defined]
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
+                subprocess.Popen(["open", path], env=folder_opener_environment())
             else:
-                subprocess.Popen(["xdg-open", path])
+                subprocess.Popen(["xdg-open", path], env=folder_opener_environment())
         except Exception as exc:
             messagebox.showerror("Stackcopy", f"Could not open folder:\n{exc}")
 

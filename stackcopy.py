@@ -4737,6 +4737,14 @@ def main():
                 "source_subdirs_scanned": sorted(scanned_source_subdirs),
                 "dest_dirs": all_dest_dirs,
                 "dest_dates": planned_dates,
+                "dest_lightroom_dates": sorted({
+                    move.dest_date.isoformat() for move in planned_moves
+                    if move.category != "stack_input"
+                }),
+                "dest_stack_input_dates": sorted({
+                    move.dest_date.isoformat() for move in planned_moves
+                    if move.category == "stack_input"
+                }),
                 "source_is_removable": source_is_removable(src_dir),
                 "source_would_be_empty_after": would_be_empty,
             }

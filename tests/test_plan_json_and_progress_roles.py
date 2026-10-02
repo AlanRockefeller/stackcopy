@@ -65,6 +65,8 @@ class PlanJsonTests(unittest.TestCase):
             self.assertEqual(payload["stacks"], 1)
             self.assertEqual(payload["stacked_outputs"], 1)
             self.assertEqual(payload["stack_inputs"], 6)
+            self.assertEqual(payload["dest_lightroom_dates"], ["2026-08-25"])
+            self.assertEqual(payload["dest_stack_input_dates"], ["2026-08-25"])
             self.assertEqual(payload["others"], 2)
             self.assertEqual(payload["other_photos"], 1)
             self.assertEqual(payload["other_videos"], 1)
@@ -108,6 +110,8 @@ class PlanJsonTests(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output)
             self.assertEqual(payload["dest_dates"], ["2026-08-23", "2026-08-25"])
+            self.assertEqual(payload["dest_lightroom_dates"], ["2026-08-23", "2026-08-25"])
+            self.assertEqual(payload["dest_stack_input_dates"], [])
             self.assertEqual(
                 payload["dest_dirs"],
                 [

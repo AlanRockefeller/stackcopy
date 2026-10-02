@@ -1,6 +1,7 @@
 """Display-free helper coverage for the explanatory GUI."""
 
 import json
+import os
 import sys
 import types
 import unittest
@@ -65,6 +66,63 @@ def plan_payload(**changes):
     return payload
 
 
+class FolderOpenerEnvironmentTests(unittest.TestCase):
+    def test_venv_paths_are_removed_without_changing_parent_or_desktop_settings(self):
+        venv = os.path.abspath("test-venv")
+        bin_dir = os.path.join(venv, "bin")
+        original = {
+            "PATH": os.pathsep.join((bin_dir, "/usr/local/bin", "/usr/bin")),
+            "VIRTUAL_ENV": venv,
+            "PYTHONHOME": venv,
+            "PYTHONPATH": "/custom/python",
+            "DISPLAY": ":1",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/session/bus",
+        }
+        with mock.patch.dict(os.environ, original, clear=True), mock.patch.object(
+            sys, "prefix", venv
+        ), mock.patch.object(sys, "base_prefix", "/system"), mock.patch.object(
+            sys, "exec_prefix", venv
+        ):
+            env = gui.folder_opener_environment()
+            self.assertEqual(dict(os.environ), original)
+        self.assertEqual(env["PATH"], os.pathsep.join(("/usr/local/bin", "/usr/bin")))
+        for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["DISPLAY"], original["DISPLAY"])
+        self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], original["DBUS_SESSION_BUS_ADDRESS"])
+
+    def test_direct_venv_python_is_handled_without_activation(self):
+        venv = os.path.abspath("test-venv")
+        with mock.patch.dict(os.environ, {
+            "PATH": os.pathsep.join((os.path.join(venv, "bin"), "/usr/bin")),
+        }, clear=True), mock.patch.object(sys, "prefix", venv), mock.patch.object(
+            sys, "base_prefix", "/system"
+        ), mock.patch.object(sys, "exec_prefix", venv):
+            self.assertEqual(gui.folder_opener_environment()["PATH"], "/usr/bin")
+
+    def test_frozen_linux_restores_original_library_path(self):
+        for original in (None, "", "/system/libs"):
+            variables = {"LD_LIBRARY_PATH": "/bundled/libs"}
+            if original is not None:
+                variables["LD_LIBRARY_PATH_ORIG"] = original
+            with mock.patch.dict(os.environ, variables, clear=True), mock.patch.object(
+                sys, "frozen", True, create=True
+            ), mock.patch.object(sys, "platform", "linux"):
+                env = gui.folder_opener_environment()
+            self.assertEqual(env.get("LD_LIBRARY_PATH"), original or None)
+
+    def test_linux_folder_button_passes_clean_environment(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._last_dest = "/photos"
+        with mock.patch.object(gui.os.path, "isdir", return_value=True), mock.patch.object(
+            gui.os, "name", "posix"
+        ), mock.patch.object(sys, "platform", "linux"), mock.patch.object(
+            gui, "folder_opener_environment", return_value={"PATH": "/usr/bin"}
+        ), mock.patch.object(gui.subprocess, "Popen") as popen:
+            gui.StackcopyGUI._open_dest(window)
+        popen.assert_called_once_with(["xdg-open", "/photos"], env={"PATH": "/usr/bin"})
+
+
 class PlanParserTests(unittest.TestCase):
     def test_valid_payload_is_normalized(self):
         parsed = gui.parse_plan_json(json.dumps(plan_payload()))
@@ -114,6 +172,71 @@ class DatedFolderSummaryTests(unittest.TestCase):
         self.assertIn("2026-08-23 to 2026-08-25", summary)
         self.assertIn("3 dated folders", summary)
         self.assertEqual(folders, dirs)
+
+
+class DestinationChangeTests(unittest.TestCase):
+    def test_paths_follow_dates_for_each_destination_without_changing_counts(self):
+        plan = plan_payload(
+            dest_lightroom_dates=["2026-08-23", "2026-08-25"],
+            dest_stack_input_dates=["2026-08-25"],
+        )
+        updated = gui.update_plan_destinations(plan, "/photos", "/inputs")
+        self.assertEqual(updated["dest_lightroom"], os.path.join("/photos", "2026", "2026-08-25"))
+        self.assertEqual(updated["dest_stack_input"], os.path.join("/inputs", "2026", "2026-08-25"))
+        self.assertEqual(updated["dest_dirs"], [
+            os.path.join("/inputs", "2026", "2026-08-25"),
+            os.path.join("/photos", "2026", "2026-08-23"),
+            os.path.join("/photos", "2026", "2026-08-25"),
+        ])
+        self.assertEqual(updated["total"], plan["total"])
+        self.assertEqual(updated["bytes"], plan["bytes"])
+        self.assertNotEqual(updated["dest_lightroom"], plan["dest_lightroom"])
+
+    def test_shared_destinations_can_split_and_merge_without_losing_roles(self):
+        plan = plan_payload(
+            dest_lightroom_dates=["2026-08-25"],
+            dest_stack_input_dates=["2026-08-25"],
+        )
+        merged = gui.update_plan_destinations(plan, "/shared", "/shared")
+        self.assertEqual(merged["dest_dirs"], [os.path.join("/shared", "2026", "2026-08-25")])
+        split = gui.update_plan_destinations(merged, "/photos", "/inputs")
+        self.assertEqual(len(split["dest_dirs"]), 2)
+
+    def test_destination_change_preserves_completed_or_pending_scan(self):
+        for plan in (None, plan_payload()):
+            window = mock.Mock(spec=gui.StackcopyGUI)
+            window._plan = plan
+            window._plan_generation = 7
+            window.dst_var = mock.Mock()
+            window.dst_var.get.return_value = "/photos"
+            window.stk_var = mock.Mock()
+            window.stk_var.get.return_value = "/inputs"
+            gui.StackcopyGUI._on_destination_changed(window)
+            window._schedule_plan_scan.assert_not_called()
+            window._cancel_plan_scan.assert_not_called()
+            self.assertEqual(window._plan_generation, 7)
+            window._refresh_idle_plan.assert_called_once()
+
+    def test_scan_result_uses_current_destinations(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window.dst_var = mock.Mock()
+        window.dst_var.get.return_value = "/latest/photos"
+        window.stk_var = mock.Mock()
+        window.stk_var.get.return_value = "/latest/inputs"
+        window.source_scan_var = mock.Mock()
+        gui.StackcopyGUI._apply_plan(window, plan_payload(
+            dest_lightroom_dates=["2026-08-25"],
+            dest_stack_input_dates=["2026-08-25"],
+        ))
+        self.assertEqual(window._plan["dest_lightroom"], os.path.join("/latest/photos", "2026", "2026-08-25"))
+        self.assertEqual(window._plan["dest_stack_input"], os.path.join("/latest/inputs", "2026", "2026-08-25"))
+
+    def test_empty_plan_uses_destination_roots(self):
+        updated = gui.update_plan_destinations(
+            plan_payload(newest_date=None), "/photos", "/inputs"
+        )
+        self.assertEqual(updated["dest_lightroom"], "/photos")
+        self.assertEqual(updated["dest_dirs"], [])
 
 
 class OtherCardFilesTests(unittest.TestCase):

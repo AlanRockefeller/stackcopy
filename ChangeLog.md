@@ -2,6 +2,8 @@
 
 ## **1.6.1 - 2026-09-21**
 
+- **Opening the Lightroom folder no longer passes Stackcopy's Python environment to the file manager.** On Linux, launching Stackcopy from a virtual environment could make Nautilus's Python extensions fail with "No module named 'gi'" even though the folder opened. The folder button now removes the virtual environment from the child process's environment so Nautilus can use system Python.
+- **Changing destination folders no longer rescans the camera card.** The GUI reuses the existing scan and immediately updates the destination preview, including every dated folder. A destination changed during a scan is also reflected when the scan finishes; imports still scan and check destinations before transferring files.
 - **The Lightroom destination and stack-input folder no longer have to be different.** The GUI used to refuse to start if you pointed both at the same folder. Pointing them at the same place is a fine way to use Stackcopy as a plain, reorganizing photo importer: stack inputs and everything else land in the same dated folders, and stacked outputs still get their renamed " stacked" suffix.
 - **Fixed ExifTool not being found on macOS even when it was installed.** A Stackcopy.app launched from Finder does not inherit the shell's PATH, so a Homebrew ExifTool (Apple Silicon's `/opt/homebrew/bin` or Intel's `/usr/local/bin`) or a MacPorts one (`/opt/local/bin`) was invisible even though it worked fine from Terminal. Stackcopy now checks those known install locations directly when PATH lookup comes up empty.
 - **When more than one ExifTool is found, Stackcopy now uses the most capable one** instead of stopping at the first one it finds, so a newer install is no longer shadowed by an older one found earlier.
