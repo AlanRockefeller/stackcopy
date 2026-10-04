@@ -81,9 +81,13 @@ clutter the library.
    collapsed **Advanced** section contains Verbose log, Detect stacks, and Show
    stack debug output.
 6. **Follow the import** - the running view names the phase and current file's
-   role, estimates time remaining, and counts stacked photos, stack frames,
+   role, estimates time remaining from processed file sizes and the average
+   speed during the import, and counts stacked photos, stack frames,
    singles/video, and problems separately. **Stop after this file** is safe:
    operations happen one file at a time and a later run picks up the rest.
+   The estimate appears after at least 15 seconds and five processed files;
+   scanning and safety checks are excluded. It can still change as drive speed
+   changes. Previews do not show a transfer-time estimate.
    Expand **Show detailed log** only when you need the raw CLI output or want to
    copy it.
 7. When it finishes, use **Open Lightroom folder** or **Import another card**.

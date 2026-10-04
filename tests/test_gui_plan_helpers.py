@@ -440,6 +440,67 @@ class ConditionalScrollbarTests(unittest.TestCase):
         window.body._scrollbar.grid.assert_called_once_with()
 
 
+class TimeRemainingTests(unittest.TestCase):
+    def test_waits_for_both_time_and_file_warmup(self):
+        self.assertIsNone(gui.estimate_remaining_seconds(14, 20, 100, 200, 1000))
+        self.assertIsNone(gui.estimate_remaining_seconds(60, 4, 100, 200, 1000))
+        self.assertEqual(gui.estimate_remaining_seconds(15, 5, 100, 200, 1000), 60)
+
+    def test_mixed_file_sizes_do_not_change_estimate_at_constant_byte_rate(self):
+        # Five small JPGs, then a large RAW: file count makes the ETA jump,
+        # while byte throughput correctly predicts the same finishing time.
+        early = gui.estimate_remaining_seconds(20, 5, 100, 100, 1000)
+        later = gui.estimate_remaining_seconds(40, 6, 100, 200, 1000)
+        self.assertEqual(early, 180)
+        self.assertEqual(later, 160)
+        self.assertEqual(20 + early, 40 + later)
+
+    def test_handles_no_work_and_completion(self):
+        for done, total, completed_bytes, total_bytes in (
+            (0, 0, 0, 0), (0, 100, 0, 1000), (5, 100, 0, 1000),
+            (5, 100, 0, 0), (5, 100, 1000, 1000), (100, 100, 1000, 1000),
+        ):
+            with self.subTest(done=done, total=total, completed_bytes=completed_bytes):
+                self.assertIsNone(gui.estimate_remaining_seconds(
+                    60, done, total, completed_bytes, total_bytes
+                ))
+
+    def test_old_cli_can_fall_back_to_file_count(self):
+        self.assertEqual(gui.estimate_remaining_seconds(20, 5, 50), 180)
+
+    def test_gui_excludes_preparation_and_uses_current_import_byte_counts(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._started_at = 400  # Ten minutes of scanning and safety checks.
+        window._pending = None
+        window._plan = plan_payload(bytes=999999999)
+        window._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
+        for name in ("progress", "phase_var", "current_file_var", "meta_var"):
+            setattr(window, name, mock.Mock())
+        window._update_meta.side_effect = lambda: gui.StackcopyGUI._update_meta(window)
+        with mock.patch.object(gui.time, "perf_counter", side_effect=[1000, 1030]):
+            gui.StackcopyGUI._handle_progress(
+                window, "@@SCPROGRESS phase=start done=0 total=10 bytes_total=10240"
+            )
+            gui.StackcopyGUI._handle_progress(
+                window, "@@SCPROGRESS phase=copy done=5 total=10 "
+                "bytes_done=2048 bytes_total=10240 role=other file=A.ORF"
+            )
+        window.meta_var.set.assert_called_with(
+            "5 of 10 files · 2.0 KB · about 2 minutes left"
+        )
+
+        # Preview work has no transfer ETA, and completion clears the ETA.
+        window._pending = ([], "", "", True)
+        gui.StackcopyGUI._update_meta(window)
+        window.meta_var.set.assert_called_with("5 of 10 files · 2.0 KB")
+        window._pending = None
+        gui.StackcopyGUI._handle_progress(
+            window, "@@SCPROGRESS phase=done done=10 total=10 "
+            "bytes_done=10240 bytes_total=10240"
+        )
+        window.meta_var.set.assert_called_with("10 of 10 files · 10.0 KB")
+
+
 class ProgressParserTests(unittest.TestCase):
     def test_role_and_stack_output_name_survive_spaces(self):
         fields, filename = gui.parse_progress(

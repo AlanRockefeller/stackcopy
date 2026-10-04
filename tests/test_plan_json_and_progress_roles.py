@@ -248,6 +248,14 @@ class ProgressRoleTests(unittest.TestCase):
             self.assertTrue(any("role=other" in line for line in progress))
             self.assertTrue(any("phase=scan" in line for line in progress))
             self.assertTrue(any("phase=prepare" in line for line in progress))
+            # Progress tracks sizes captured before source files disappear.
+            start = next(line for line in progress if "phase=start" in line)
+            finished = next(line for line in progress if "phase=done" in line)
+            self.assertIn("bytes_total=44", start)
+            self.assertIn("bytes_done=0", start)
+            self.assertIn("bytes_total=44", finished)
+            self.assertIn("bytes_done=44", finished)
+            self.assertFalse(list(source.glob("*.*")))
             stack_lines = [line for line in progress if "role=stack_input" in line]
             self.assertTrue(
                 all(
@@ -255,6 +263,63 @@ class ProgressRoleTests(unittest.TestCase):
                     for line in stack_lines
                 )
             )
+
+    def test_byte_progress_counts_skips_failures_and_preview_as_processed_work(self):
+        for mode in ("copy", "repeat", "failure", "preview", "interrupted"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "card"
+                lightroom = root / "Lightroom"
+                stack_input = root / "StackInput"
+                when = datetime(2026, 8, 25, 12)
+                write_file(source / "P8080001.JPG", b"photo", when)
+                write_file(source / "P8080001.ORF", b"raw-original", when)
+                args = ["--lightroomimport", str(source), "--leave-on-card"]
+                if mode == "preview":
+                    args.append("--dry")
+                if mode == "repeat":
+                    code, _ = run_main(
+                        args, lightroom=lightroom, stack_input=stack_input, metadata={}
+                    )
+                    self.assertEqual(code, 0)
+                stderr = io.StringIO()
+                contexts = [redirect_stderr(stderr)]
+                if mode == "failure":
+                    contexts.append(mock.patch.object(
+                        stackcopy, "safe_file_operation", return_value=(False, 0)
+                    ))
+                if mode == "interrupted":
+                    operation = stackcopy.safe_file_operation
+                    calls = 0
+
+                    def interrupt_second_file(*args, **kwargs):
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            raise KeyboardInterrupt
+                        return operation(*args, **kwargs)
+
+                    contexts.append(mock.patch.object(
+                        stackcopy, "safe_file_operation", side_effect=interrupt_second_file
+                    ))
+                with mock.patch.object(stackcopy, "_PROGRESS_ENABLED", True):
+                    run_main(
+                        args, lightroom=lightroom, stack_input=stack_input,
+                        metadata={}, extra_contexts=tuple(contexts),
+                    )
+                progress = [
+                    dict(part.split("=", 1) for part in line.split()[1:])
+                    for line in stderr.getvalue().splitlines()
+                    if line.startswith(stackcopy._PROGRESS_SENTINEL)
+                ]
+                events = [event for event in progress if event["phase"] == "copy"]
+                self.assertEqual([int(event["bytes_done"]) for event in events], [0, 5])
+                terminal = "interrupted" if mode == "interrupted" else "done"
+                finished = next(event for event in progress if event["phase"] == terminal)
+                self.assertEqual(int(finished["bytes_done"]), 5 if mode == "interrupted" else 17)
+                self.assertEqual(int(finished["bytes_total"]), 17)
+                self.assertTrue((source / "P8080001.JPG").exists())
+                self.assertTrue((source / "P8080001.ORF").exists())
 
 
 class CardEmptyHeuristicTests(unittest.TestCase):

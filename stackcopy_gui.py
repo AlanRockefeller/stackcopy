@@ -519,6 +519,29 @@ def format_eta(seconds: float) -> str:
     return f"about {max(1, round(rounded / 60))} minutes left"
 
 
+def estimate_remaining_seconds(
+    elapsed: float,
+    done: int,
+    total: int,
+    completed_bytes: int | None = None,
+    total_bytes: int | None = None,
+) -> float | None:
+    """Average actual import work over time, after a short warm-up.
+
+    Byte counts describe files processed, including skips and failures. Using
+    the whole transfer average smooths individual file timings; scanning and
+    destination checks must be excluded from ``elapsed``. Older CLIs without
+    byte progress can still use a file-count estimate.
+    """
+    if elapsed < 15 or done < 5 or done >= total:
+        return None
+    if completed_bytes is not None and total_bytes is not None:
+        if not 0 < completed_bytes < total_bytes:
+            return None
+        return elapsed * (total_bytes - completed_bytes) / completed_bytes
+    return elapsed * (total - done) / done
+
+
 def parse_cli_summary(text: str) -> dict[str, int]:
     result: dict[str, int] = {}
     patterns = {
@@ -884,6 +907,9 @@ class StackcopyGUI(ctk.CTk):
         self._last_dest: str | None = None
         self._log_lines: list[str] = []
         self._started_at = 0.0
+        self._transfer_started_at: float | None = None
+        self._progress_total_bytes: int | None = None
+        self._progress_done_bytes: int | None = None
         self._total = 0
         self._done = 0
         self._current_role: str | None = None
@@ -1976,6 +2002,9 @@ class StackcopyGUI(ctk.CTk):
         self._terminated_by_user = False
         self._log_lines = []
         self._started_at = time.perf_counter()
+        self._transfer_started_at = None
+        self._progress_total_bytes = None
+        self._progress_done_bytes = None
         self._total = int(self._plan["total"]) if self._plan else 0
         self._done = 0
         self._current_role = None
@@ -2119,11 +2148,23 @@ class StackcopyGUI(ctk.CTk):
             return
         if phase == "start":
             self._total = total
+            self._done = 0
+            self._transfer_started_at = time.perf_counter()
+            self._progress_total_bytes = (
+                int(fields["bytes_total"]) if "bytes_total" in fields else None
+            )
+            self._progress_done_bytes = (
+                0 if self._progress_total_bytes is not None else None
+            )
             self.progress.stop()
             self.progress.configure(mode="determinate")
             self.progress.set(0)
             self.phase_var.set("Preparing…" if total else "Nothing found")
             return
+        if "bytes_done" in fields:
+            self._progress_done_bytes = int(fields["bytes_done"])
+        if "bytes_total" in fields:
+            self._progress_total_bytes = int(fields["bytes_total"])
         if phase in {"move", "copy"}:
             role = fields.get("role", "other")
             self._current_role = role if role in self._bucket_done else "other"
@@ -2151,6 +2192,7 @@ class StackcopyGUI(ctk.CTk):
             self._total = total or self._total
             self._degraded = fields.get("degraded") == "1"
             self.progress.set(done / self._total if self._total else 0)
+            self._update_meta()
             self._update_counter_cards()
 
     def _set_phase_heading(self, role: str) -> None:
@@ -2202,16 +2244,27 @@ class StackcopyGUI(ctk.CTk):
         if not self._total:
             self.meta_var.set("")
             return
-        total_bytes = int(self._plan.get("bytes", 0)) if self._plan else 0
-        processed_bytes = (
-            int(total_bytes * self._done / self._total) if total_bytes else 0
-        )
         pieces = [f"{self._done} of {self._total} files"]
-        if total_bytes:
-            pieces.append(format_bytes(processed_bytes))
-        elapsed = max(0.001, time.perf_counter() - self._started_at)
-        if self._done and self._done < self._total:
-            pieces.append(format_eta(elapsed / self._done * (self._total - self._done)))
+        if self._progress_done_bytes is not None:
+            pieces.append(format_bytes(self._progress_done_bytes))
+        preview = self._pending is not None and self._pending[3]
+        if (
+            self._transfer_started_at is not None
+            and self._done < self._total
+            and not preview
+        ):
+            remaining = estimate_remaining_seconds(
+                time.perf_counter() - self._transfer_started_at,
+                self._done,
+                self._total,
+                self._progress_done_bytes,
+                self._progress_total_bytes,
+            )
+            pieces.append(
+                format_eta(remaining)
+                if remaining is not None
+                else "Estimating time left…"
+            )
         self.meta_var.set(" · ".join(pieces))
 
     def _bucket_total(self, role: str) -> int | None:

@@ -4859,8 +4859,35 @@ def main():
                     print("Please type y or n.")
 
         # --- Phase F: Execute file operations sequentially ---
+        # Snapshot sizes before a move can remove the source. Use the planner's
+        # fingerprints when available; incomplete size data falls back to the
+        # GUI's file-count estimate rather than understating the remaining work.
+        progress_sizes: list[int] = []
+        if _PROGRESS_ENABLED:
+            for move in planned_moves:
+                fingerprint = (
+                    move.destination_check.source_fingerprint
+                    if move.destination_check
+                    else None
+                )
+                try:
+                    progress_sizes.append(
+                        fingerprint.size
+                        if fingerprint
+                        else os.path.getsize(move.src_path)
+                    )
+                except OSError:
+                    break
+        progress_bytes_total = (
+            sum(progress_sizes) if len(progress_sizes) == len(planned_moves) else None
+        )
+        byte_progress = (
+            {"bytes_total": progress_bytes_total, "bytes_done": 0}
+            if progress_bytes_total is not None
+            else {}
+        )
         exec_start_time = time.perf_counter()
-        _emit_progress(phase="start", done=0, total=len(planned_moves))
+        _emit_progress(phase="start", done=0, total=len(planned_moves), **byte_progress)
         # execution_results already initialized at top of main
         for move in planned_moves:
             if move.stem not in execution_results:
@@ -4889,6 +4916,7 @@ def main():
                     "total": _total_planned,
                     "role": progress_role,
                 }
+                progress_fields.update(byte_progress)
                 if move.stack_output_name:
                     progress_fields["stack_output_name"] = quote(
                         move.stack_output_name, safe=""
@@ -4917,6 +4945,8 @@ def main():
                     )
 
                 attempted_count += 1
+                if progress_bytes_total is not None:
+                    byte_progress["bytes_done"] += progress_sizes[_move_index]
                 outcome = operation_outcome_of(success)
                 res = execution_results[move.stem]
                 if not args.dry_run:
@@ -5139,6 +5169,7 @@ def main():
             phase="interrupted" if interrupted else "done",
             done=attempted_count,
             total=len(planned_moves),
+            **byte_progress,
             # Tells the GUI the import finished but not as planned, so it
             # never shows a plain "Import complete".
             degraded=1 if (recovered_count or source_remains_paths) else 0,
