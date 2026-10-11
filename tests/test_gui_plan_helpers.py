@@ -2,10 +2,11 @@
 
 import json
 import os
+import shutil
 import sys
 import types
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -403,49 +404,68 @@ class ScanProgressTextTests(unittest.TestCase):
             gui.scan_progress_text({"phase": "metadata", "total": "0"}, 5)
         )
 
-    def test_metadata_cache_uses_local_appdata_on_windows(self):
-        # Only the Windows branch is under test; a real WindowsPath cannot be
-        # built on other systems, so the pure flavour stands in for it.
-        with (
-            mock.patch.object(gui.os, "name", "nt"),
-            mock.patch.object(gui, "Path", PureWindowsPath),
-            mock.patch.dict(
-                gui.os.environ, {"LOCALAPPDATA": r"C:\Users\me\AppData\Local"}
-            ),
-        ):
-            self.assertEqual(
-                gui.metadata_cache_path(),
-                r"C:\Users\me\AppData\Local\Stackcopy\stack-metadata-cache.json",
-            )
+    def test_metadata_cache_lives_in_a_private_session_directory(self):
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            path = gui.metadata_cache_path()
+            try:
+                self.assertEqual(os.path.basename(path), gui.METADATA_CACHE_FILENAME)
+                cache_dir = os.path.dirname(path)
+                self.assertTrue(os.path.isdir(cache_dir))
+                self.assertTrue(
+                    os.path.basename(cache_dir).startswith("stackcopy-metadata-")
+                )
+                # Every scan and import in one session shares the same file.
+                self.assertEqual(gui.metadata_cache_path(), path)
+            finally:
+                shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
-    def test_metadata_cache_uses_library_caches_on_macos(self):
-        with (
-            mock.patch.object(gui.os, "name", "posix"),
-            mock.patch.object(gui.sys, "platform", "darwin"),
-        ):
-            self.assertEqual(
-                gui.metadata_cache_path(),
-                str(
-                    Path.home()
-                    / "Library"
-                    / "Caches"
-                    / gui.APP_NAME
-                    / gui.METADATA_CACHE_FILENAME
-                ),
-            )
+    def test_a_new_session_does_not_inherit_the_previous_cache(self):
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            first = gui.metadata_cache_path()
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            second = gui.metadata_cache_path()
+        try:
+            self.assertNotEqual(os.path.dirname(first), os.path.dirname(second))
+        finally:
+            shutil.rmtree(os.path.dirname(first), ignore_errors=True)
+            shutil.rmtree(os.path.dirname(second), ignore_errors=True)
 
-    def test_metadata_cache_lives_in_the_user_cache_directory(self):
-        with (
-            mock.patch.object(gui.os, "name", "posix"),
-            mock.patch.object(gui.sys, "platform", "linux"),
-            mock.patch.dict(gui.os.environ, {"XDG_CACHE_HOME": "/xdg-cache"}),
-        ):
-            self.assertEqual(
-                gui.metadata_cache_path(),
-                os.path.join(
-                    "/xdg-cache", gui.APP_NAME, gui.METADATA_CACHE_FILENAME
-                ),
-            )
+    def test_clearing_the_metadata_cache_removes_its_file(self):
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            path = gui.metadata_cache_path()
+            try:
+                Path(path).write_text("{}", encoding="utf-8")
+                gui.clear_metadata_cache()
+                self.assertFalse(os.path.exists(path))
+                gui.clear_metadata_cache()  # already gone: still fine
+            finally:
+                shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+    def test_card_change_clears_the_cache_and_rescans_a_reinserted_source(self):
+        app = types.SimpleNamespace(
+            _card_poll_busy=True,
+            _known_cards=set(),
+            _running=False,
+            src_var=mock.Mock(get=mock.Mock(return_value="/media/card/DCIM")),
+            _on_path_changed=mock.Mock(),
+        )
+        with mock.patch.object(gui, "clear_metadata_cache") as clear:
+            gui.StackcopyGUI._handle_cards(app, ["/media/card"])
+        clear.assert_called_once_with()
+        app._on_path_changed.assert_called_once_with()
+
+    def test_an_unchanged_card_set_keeps_the_cache(self):
+        app = types.SimpleNamespace(
+            _card_poll_busy=True,
+            _known_cards={"/media/card"},
+            _running=False,
+            src_var=mock.Mock(get=mock.Mock(return_value="/media/card")),
+            _on_path_changed=mock.Mock(),
+        )
+        with mock.patch.object(gui, "clear_metadata_cache") as clear:
+            gui.StackcopyGUI._handle_cards(app, ["/media/card"])
+        clear.assert_not_called()
+        app._on_path_changed.assert_not_called()
 
 
 class ResultCardNoticeTests(unittest.TestCase):

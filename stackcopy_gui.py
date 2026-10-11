@@ -9,13 +9,16 @@ plan/progress events, and keeps the raw output available on demand.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -641,17 +644,32 @@ def _settings_path() -> Path:
     return base / APP_NAME / SETTINGS_FILENAME
 
 
+_metadata_cache_dir: str | None = None
+
+
 def metadata_cache_path() -> str:
-    """Where the CLI remembers camera stack metadata between plan and run."""
-    if os.name == "nt":
-        base = Path(
-            os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
-        )
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches"
-    else:
-        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    return str(base / APP_NAME / METADATA_CACHE_FILENAME)
+    """Where the CLI remembers camera stack metadata between plan and run.
+
+    Path, size and mtime cannot tell one card's P1010001.JPG from the next
+    card's file of the same name, so the cache lives in a private temporary
+    directory that lasts only as long as this GUI session and is emptied
+    whenever a card comes or goes.
+    """
+    global _metadata_cache_dir
+    if _metadata_cache_dir is None or not os.path.isdir(_metadata_cache_dir):
+        _metadata_cache_dir = tempfile.mkdtemp(prefix="stackcopy-metadata-")
+        atexit.register(shutil.rmtree, _metadata_cache_dir, True)
+    return os.path.join(_metadata_cache_dir, METADATA_CACHE_FILENAME)
+
+
+def clear_metadata_cache() -> None:
+    """Forget every cached answer, e.g. because a different card may be in."""
+    if _metadata_cache_dir is None:
+        return
+    try:
+        os.remove(os.path.join(_metadata_cache_dir, METADATA_CACHE_FILENAME))
+    except OSError:
+        pass
 
 
 # gui-state.json began as a flat string-to-string map.  Booleans and numbers
@@ -1637,11 +1655,17 @@ class StackcopyGUI(ctk.CTk):
     def _handle_cards(self, cards: list[str]) -> None:
         self._card_poll_busy = False
         inserted = [card for card in cards if card not in self._known_cards]
+        if set(cards) != self._known_cards and not self._running:
+            # A card swapped at the same mount point can reuse every path,
+            # size and coarse mtime, so earlier ExifTool answers are void.
+            clear_metadata_cache()
         self._known_cards = set(cards)
         if not inserted or self._running:
             return
         source = self.src_var.get().strip()
         if any(path_is_within(source, card) for card in inserted):
+            # Same source path, possibly different card: the plan is stale.
+            self._on_path_changed()
             return
         self.src_var.set(inserted[0])
 

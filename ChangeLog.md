@@ -3,7 +3,7 @@
 ## **1.6.2 - 2026-10-10**
 
 - **Card scans are much faster.** Stackcopy uses ExifTool to read the stack information in each JPEG, and it used to do that one batch at a time on a single CPU core. It now runs several ExifTool processes at once. On an 8-core laptop, a card with about 2,000 JPEGs now scans in under 10 seconds instead of about 30.
-- **Move Files no longer scans the card a second time.** The GUI remembers what the preview scan read from each JPEG, so the import gets going almost right away. Any file that changed after the preview is read again.
+- **Move Files no longer scans the card a second time.** The GUI remembers what the preview scan read from each JPEG, so the import gets going almost right away. Any file that changed after the preview is read again. The GUI only keeps this for as long as it is open, and forgets it whenever a card is inserted or removed, so a different card with the same file names is always read fresh.
 - **You can see what the scan is doing.** While it runs, the GUI shows how many photos and videos it found and how many JPEGs it has checked for camera stacks so far, and the progress bar fills up as it goes.
 - **Picking a different card or folder during a scan now stops the old scan's ExifTool processes** on Linux and macOS. They used to keep running in the background until they finished.
 - **The time remaining estimate is based on data copied, not files.** It used to divide the time so far by the number of files done, so large videos and RAW files threw it off, and so did the time spent scanning. It now uses the average copy speed since the first file started. It shows up after 15 seconds and five files, and it isn't shown for previews.
