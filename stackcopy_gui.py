@@ -9,12 +9,16 @@ plan/progress events, and keeps the raw output available on demand.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -86,6 +90,8 @@ APP_NAME = "Stackcopy"
 # stackcopy module failed to load, in which case there is no version to show.
 APP_TITLE = f"{APP_NAME} {STACKCOPY_VERSION}".strip()
 SETTINGS_FILENAME = "gui-state.json"
+METADATA_CACHE_FILENAME = "stack-metadata-cache.json"
+CARD_POLL_MS = 2000
 MOVE_MODE = "Move off the card"
 COPY_MODE = "Copy, leave card untouched"
 
@@ -122,6 +128,38 @@ def cli_command(cli_args: list[str]) -> tuple[list[str], dict[str, str]]:
     return [sys.executable, os.path.join(here, "stackcopy.py"), *cli_args], env
 
 
+def folder_opener_environment() -> dict[str, str]:
+    """Let desktop apps use system Python rather than Stackcopy's venv."""
+    env = os.environ.copy()
+    venv_roots = {env.get("VIRTUAL_ENV", "")}
+    if sys.prefix != sys.base_prefix:
+        venv_roots.update((sys.prefix, sys.exec_prefix))
+    venv_bins = {
+        os.path.normcase(os.path.abspath(os.path.join(root, "bin")))
+        for root in venv_roots if root
+    }
+    if "PATH" in env:
+        # Keep all unrelated entries, including the desktop session's tools.
+        env["PATH"] = os.pathsep.join(
+            entry for entry in env["PATH"].split(os.pathsep)
+            if os.path.normcase(os.path.abspath(entry)) not in venv_bins
+        )
+    for key in (
+        "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE",
+        "__PYVENV_LAUNCHER__",
+    ):
+        env.pop(key, None)
+    if getattr(sys, "frozen", False) and sys.platform.startswith("linux"):
+        # PyInstaller prepends its bundled libraries for its own processes.
+        # Restore the system search path only in this external app's copy.
+        original = env.get("LD_LIBRARY_PATH_ORIG")
+        if original:
+            env["LD_LIBRARY_PATH"] = original
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def parse_progress(line: str) -> tuple[dict[str, str], str | None]:
     """Parse a progress sentinel, including percent-escaped display fields."""
     body = line[len(PROGRESS_SENTINEL) :].strip()
@@ -139,6 +177,32 @@ def parse_progress(line: str) -> tuple[dict[str, str], str | None]:
             key, value = token.split("=", 1)
             fields[key] = unquote(value) if key == "stack_output_name" else value
     return fields, filename
+
+
+def scan_progress_text(fields: dict[str, str], found: int | None) -> str | None:
+    """Describe a scan-phase progress event, or None for other phases."""
+    phase = fields.get("phase")
+    if found is None:
+        found_text = None
+    elif found == 1:
+        found_text = "Found 1 photo or video"
+    else:
+        found_text = f"Found {found:,} photos and videos"
+    if phase == "scanned":
+        return found_text
+    if phase == "metadata":
+        total = int(fields.get("total", "0") or 0)
+        done = int(fields.get("done", "0") or 0)
+        if not total:
+            return None
+        noun = "JPEG" if total == 1 else "JPEGs"
+        checking = (
+            f"{total:,} {noun} for camera stacks ({min(done, total):,} of {total:,})…"
+        )
+        if found_text is None:
+            return f"Checking {checking}"
+        return f"{found_text} - checking {checking}"
+    return None
 
 
 def parse_plan_json(text: str) -> dict[str, object] | None:
@@ -171,7 +235,7 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
     ):
         return None
     normalized["source_subdirs_scanned"] = subdirs
-    for field in ("dest_dirs", "dest_dates"):
+    for field in ("dest_dirs", "dest_dates", "dest_lightroom_dates", "dest_stack_input_dates"):
         # Older CLIs do not send these; an absent list simply means the GUI
         # falls back to showing the headline destination on its own.
         value = normalized.get(field, [])
@@ -181,6 +245,29 @@ def parse_plan_json(text: str) -> dict[str, object] | None:
             return None
         normalized[field] = value
     return normalized
+
+
+def update_plan_destinations(
+    plan: dict[str, object], lightroom_dir: str, stack_input_dir: str
+) -> dict[str, object]:
+    """Rebuild preview paths from cached dates without reading the source."""
+    updated = dict(plan)
+
+    def dated_path(root: str, date: str) -> str:
+        return os.path.join(root, date[:4], date) if date else root
+
+    newest = str(plan.get("newest_date") or "")
+    updated["dest_lightroom"] = dated_path(lightroom_dir, newest)
+    updated["dest_stack_input"] = dated_path(stack_input_dir, newest)
+    updated["dest_dirs"] = sorted({
+        dated_path(root, date)
+        for root, field in (
+            (lightroom_dir, "dest_lightroom_dates"),
+            (stack_input_dir, "dest_stack_input_dates"),
+        )
+        for date in plan.get(field, [])
+    })
+    return updated
 
 
 def exiftool_status_display(
@@ -463,6 +550,29 @@ def format_eta(seconds: float) -> str:
     return f"about {max(1, round(rounded / 60))} minutes left"
 
 
+def estimate_remaining_seconds(
+    elapsed: float,
+    done: int,
+    total: int,
+    completed_bytes: int | None = None,
+    total_bytes: int | None = None,
+) -> float | None:
+    """Average actual import work over time, after a short warm-up.
+
+    Byte counts describe files processed, including skips and failures. Using
+    the whole transfer average smooths individual file timings; scanning and
+    destination checks must be excluded from ``elapsed``. Older CLIs without
+    byte progress can still use a file-count estimate.
+    """
+    if elapsed < 15 or done < 5 or done >= total:
+        return None
+    if completed_bytes is not None and total_bytes is not None:
+        if not 0 < completed_bytes < total_bytes:
+            return None
+        return elapsed * (total_bytes - completed_bytes) / completed_bytes
+    return elapsed * (total - done) / done
+
+
 def parse_cli_summary(text: str) -> dict[str, int]:
     result: dict[str, int] = {}
     patterns = {
@@ -532,6 +642,34 @@ def _settings_path() -> Path:
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return base / APP_NAME / SETTINGS_FILENAME
+
+
+_metadata_cache_dir: str | None = None
+
+
+def metadata_cache_path() -> str:
+    """Where the CLI remembers camera stack metadata between plan and run.
+
+    Path, size and mtime cannot tell one card's P1010001.JPG from the next
+    card's file of the same name, so the cache lives in a private temporary
+    directory that lasts only as long as this GUI session and is emptied
+    whenever a card comes or goes.
+    """
+    global _metadata_cache_dir
+    if _metadata_cache_dir is None or not os.path.isdir(_metadata_cache_dir):
+        _metadata_cache_dir = tempfile.mkdtemp(prefix="stackcopy-metadata-")
+        atexit.register(shutil.rmtree, _metadata_cache_dir, True)
+    return os.path.join(_metadata_cache_dir, METADATA_CACHE_FILENAME)
+
+
+def clear_metadata_cache() -> None:
+    """Forget every cached answer, e.g. because a different card may be in."""
+    if _metadata_cache_dir is None:
+        return
+    try:
+        os.remove(os.path.join(_metadata_cache_dir, METADATA_CACHE_FILENAME))
+    except OSError:
+        pass
 
 
 # gui-state.json began as a flat string-to-string map.  Booleans and numbers
@@ -619,6 +757,181 @@ def volume_label(path: str) -> str | None:
         return None
 
 
+# Filesystems that are never a camera card, and that can stall a stat() for
+# seconds when the server is away.  WSL's drvfs/9p bridge is allowed through
+# because a card reader on Windows shows up that way as /mnt/<letter>.
+_NON_CARD_FSTYPES = frozenset(
+    {
+        "nfs",
+        "nfs4",
+        "cifs",
+        "smb3",
+        "smbfs",
+        "fuse.sshfs",
+        "sshfs",
+        "fuse.rclone",
+        "davfs",
+        "fuse.portal",
+        "afs",
+        "ceph",
+        "glusterfs",
+    }
+)
+
+
+def _has_dcim(root: str) -> bool:
+    try:
+        with os.scandir(root) as entries:
+            return any(
+                entry.name.upper() == "DCIM" and entry.is_dir() for entry in entries
+            )
+    except OSError:
+        return False
+
+
+def _unescape_mount_field(field: str) -> str:
+    """Decode the octal escapes (``\\040`` for a space) /proc/mounts uses."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _linux_card_candidates(mounts_text: str) -> list[str]:
+    candidates: list[str] = []
+    for line in mounts_text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        target = _unescape_mount_field(fields[1])
+        fstype = fields[2]
+        if fstype in _NON_CARD_FSTYPES:
+            continue
+        if target.startswith(("/run/media/", "/media/")) or re.match(
+            r"^/mnt/[A-Za-z0-9_.-]+$", target
+        ):
+            candidates.append(target)
+    return candidates
+
+
+def _windows_card_candidates() -> list[str]:
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # Suppress "There is no disk in the drive" dialogs from empty readers.
+        previous = kernel32.SetErrorMode(0x0001 | 0x8000)
+        try:
+            mask = kernel32.GetLogicalDrives()
+            roots = []
+            for index in range(26):
+                if not mask & (1 << index):
+                    continue
+                root = f"{chr(ord('A') + index)}:\\"
+                # 2 = removable, 3 = fixed (some USB card readers report fixed).
+                if kernel32.GetDriveTypeW(root) in (2, 3) and index >= 2:
+                    roots.append(root)
+            return roots
+        finally:
+            kernel32.SetErrorMode(previous)
+    except (AttributeError, OSError):
+        return []
+
+
+def find_camera_cards() -> list[str]:
+    """Mounted volumes that look like a camera card (a ``DCIM`` folder at the root).
+
+    Best effort and never raises: an empty list simply means the user picks
+    the card by hand, exactly as before.
+    """
+    try:
+        if os.name == "nt":
+            candidates = _windows_card_candidates()
+        elif sys.platform == "darwin":
+            try:
+                candidates = [entry.path for entry in os.scandir("/Volumes")]
+            except OSError:
+                candidates = []
+        else:
+            try:
+                with open("/proc/self/mounts", encoding="utf-8") as handle:
+                    candidates = _linux_card_candidates(handle.read())
+            except OSError:
+                candidates = []
+        seen: set[str] = set()
+        cards: list[str] = []
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if _has_dcim(candidate):
+                cards.append(candidate)
+        return sorted(cards, key=str.casefold)
+    except Exception:
+        return []
+
+
+def choose_startup_source(saved: str, cards: list[str]) -> str:
+    """The folder to show at startup: an inserted card beats a remembered path.
+
+    A remembered folder that is on (or is) one of the inserted cards is kept,
+    so a deliberately chosen DCIM subfolder survives a restart.  Otherwise the
+    window is called "Import from card", so a card that is plugged in is what
+    the user almost certainly wants.
+    """
+    saved = saved.strip()
+    if saved and any(path_is_within(saved, card) for card in cards):
+        return saved
+    if cards:
+        return cards[0]
+    return saved
+
+
+def linux_display_scale(env: dict[str, str] | None = None, xft_dpi: str = "") -> float:
+    """HiDPI scale for X11/XWayland, where Tk and customtkinter see 96 DPI.
+
+    Windows and macOS report scaling to Tk themselves.  On Linux the desktop
+    advertises it through the same hints GTK and Qt apps follow; Hyprland
+    (Omarchy), for example, sets ``GDK_SCALE=2`` with XWayland's own scaling
+    turned off, so an unscaled Tk window is half-size on a 4K panel.
+    ``STACKCOPY_UI_SCALE`` overrides everything.
+    """
+    env = os.environ if env is None else env
+
+    def number(value: str | None) -> float | None:
+        try:
+            parsed = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if 0.5 <= parsed <= 4.0 else None
+
+    override = number(env.get("STACKCOPY_UI_SCALE"))
+    if override:
+        return override
+    gdk = number(env.get("GDK_SCALE"))
+    if gdk:
+        return gdk * (number(env.get("GDK_DPI_SCALE")) or 1.0)
+    qt = number(env.get("QT_SCALE_FACTOR"))
+    if qt:
+        return qt
+    match = re.search(r"Xft\.dpi:\s*([0-9.]+)", xft_dpi)
+    if match:
+        dpi = number(str(float(match.group(1)) / 96.0))
+        if dpi:
+            return dpi
+    return 1.0
+
+
+def _read_xft_dpi() -> str:
+    try:
+        return subprocess.run(
+            ["xrdb", "-query"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
@@ -644,6 +957,7 @@ class StackcopyGUI(ctk.CTk):
         self._plan_generation = 0
         self._plan_after: str | None = None
         self._plan_slow_after: str | None = None
+        self._scan_found: int | None = None
         self._save_state_scheduled = False
         self._pending: tuple[list[str], str, str, bool] | None = None
         self._assume_yes = False
@@ -653,6 +967,9 @@ class StackcopyGUI(ctk.CTk):
         self._last_dest: str | None = None
         self._log_lines: list[str] = []
         self._started_at = 0.0
+        self._transfer_started_at: float | None = None
+        self._progress_total_bytes: int | None = None
+        self._progress_done_bytes: int | None = None
         self._total = 0
         self._done = 0
         self._current_role: str | None = None
@@ -673,7 +990,12 @@ class StackcopyGUI(ctk.CTk):
         # survive every save instead of being dropped on the next write.
         saved = load_gui_state()
         self._state: dict[str, object] = dict(saved)
-        self.src_var = ctk.StringVar(value=state_text(saved, "source_dir"))
+        cards = find_camera_cards()
+        self._known_cards = set(cards)
+        self._card_poll_busy = False
+        self.src_var = ctk.StringVar(
+            value=choose_startup_source(state_text(saved, "source_dir"), cards)
+        )
         self.dst_var = ctk.StringVar(
             value=state_text(saved, "lightroom_dir", lightroom_default)
         )
@@ -712,11 +1034,12 @@ class StackcopyGUI(ctk.CTk):
         self.after_idle(self._update_body_scrollbar)
 
         self.src_var.trace_add("write", lambda *_: self._on_path_changed())
-        self.dst_var.trace_add("write", lambda *_: self._on_path_changed())
-        self.stk_var.trace_add("write", lambda *_: self._on_path_changed())
+        self.dst_var.trace_add("write", lambda *_: self._on_destination_changed())
+        self.stk_var.trace_add("write", lambda *_: self._on_destination_changed())
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_queue)
         self.after(150, self._schedule_plan_scan)
+        self.after(CARD_POLL_MS, self._poll_cards)
         self._refresh_idle_plan()
         self._schedule_automatic_update_check()
 
@@ -1308,9 +1631,63 @@ class StackcopyGUI(ctk.CTk):
 
     def _browse(self, variable: ctk.StringVar, title: str) -> None:
         start = variable.get() or os.path.expanduser("~")
-        chosen = filedialog.askdirectory(initialdir=start, title=title)
+        if sys.platform.startswith("linux"):
+            # Tk's own X11 folder picker opens barely three rows tall; give it
+            # room to browse (it is modal, so this runs from its event loop).
+            self.after(60, self._enlarge_folder_dialog)
+        chosen = filedialog.askdirectory(parent=self, initialdir=start, title=title)
         if chosen:
             variable.set(chosen)
+
+    def _poll_cards(self) -> None:
+        """Watch for a card being inserted while the window is open."""
+        if self._closing:
+            return
+        if not self._card_poll_busy:
+            self._card_poll_busy = True
+
+            def scan() -> None:
+                self._queue.put(("cards", find_camera_cards()))
+
+            threading.Thread(target=scan, daemon=True).start()
+        self.after(CARD_POLL_MS, self._poll_cards)
+
+    def _handle_cards(self, cards: list[str]) -> None:
+        self._card_poll_busy = False
+        inserted = [card for card in cards if card not in self._known_cards]
+        if set(cards) != self._known_cards and not self._running:
+            # A card swapped at the same mount point can reuse every path,
+            # size and coarse mtime, so earlier ExifTool answers are void.
+            clear_metadata_cache()
+        self._known_cards = set(cards)
+        if not inserted or self._running:
+            return
+        source = self.src_var.get().strip()
+        if any(path_is_within(source, card) for card in inserted):
+            # Same source path, possibly different card: the plan is stale.
+            self._on_path_changed()
+            return
+        self.src_var.set(inserted[0])
+
+    def _enlarge_folder_dialog(self, attempts: int = 10) -> None:
+        # The dialog is built in Tcl, so tkinter has no widget object for it.
+        dialog = ".__tk_choosedir"
+        try:
+            exists = bool(int(self.tk.call("winfo", "exists", dialog)))
+        except Exception:
+            return
+        if not exists:
+            if attempts > 0:
+                self.after(60, lambda: self._enlarge_folder_dialog(attempts - 1))
+            return
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self)
+            width, height = round(640 * scale), round(480 * scale)
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 3)
+            self.tk.call("wm", "geometry", dialog, f"{width}x{height}+{x}+{y}")
+        except Exception:
+            pass
 
     def _on_path_changed(self) -> None:
         self._schedule_save()
@@ -1322,6 +1699,14 @@ class StackcopyGUI(ctk.CTk):
     def _on_mode_changed(self, _value: str | None = None) -> None:
         self._sync_mode_help()
         self._schedule_save()
+        self._refresh_idle_plan()
+
+    def _on_destination_changed(self) -> None:
+        self._schedule_save()
+        if self._plan is not None:
+            self._plan = update_plan_destinations(
+                self._plan, self.dst_var.get().strip(), self.stk_var.get().strip()
+            )
         self._refresh_idle_plan()
 
     def _on_detection_changed(self) -> None:
@@ -1390,6 +1775,8 @@ class StackcopyGUI(ctk.CTk):
         if not self.detect_stacks_var.get():
             args.append("--no-stack-detection")
         command, env = cli_command(args)
+        env["STACKCOPY_PROGRESS"] = "1"
+        env["STACKCOPY_METADATA_CACHE"] = metadata_cache_path()
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = self.dst_var.get().strip()
         env["STACKCOPY_STACK_INPUT_DIR"] = self.stk_var.get().strip()
         threading.Thread(
@@ -1406,6 +1793,8 @@ class StackcopyGUI(ctk.CTk):
         )
         process: subprocess.Popen | None = None
         try:
+            # Its own process group, so a superseded scan can stop the
+            # ExifTool workers it started along with itself.
             process = subprocess.Popen(
                 command,
                 env=env,
@@ -1416,6 +1805,7 @@ class StackcopyGUI(ctk.CTk):
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creationflags,
+                start_new_session=os.name != "nt",
             )
             with self._plan_proc_lock:
                 superseded = generation != self._plan_generation or self._closing
@@ -1423,7 +1813,20 @@ class StackcopyGUI(ctk.CTk):
                     self._plan_proc = process
             if superseded:
                 self._stop_plan_process(process)
-            stdout, _stderr = process.communicate()
+
+            def pump_progress(stream) -> None:
+                for line in stream:
+                    if line.startswith(PROGRESS_SENTINEL):
+                        fields, _filename = parse_progress(line)
+                        self._queue.put(("plan_progress", (generation, fields)))
+
+            progress_thread = threading.Thread(
+                target=pump_progress, args=(process.stderr,), daemon=True
+            )
+            progress_thread.start()
+            stdout = process.stdout.read()
+            process.wait()
+            progress_thread.join()
             payload = parse_plan_json(stdout) if process.returncode == 0 else None
             self._queue.put(("plan", (generation, payload)))
         except Exception:
@@ -1438,12 +1841,22 @@ class StackcopyGUI(ctk.CTk):
         """Terminate a superseded scan without blocking the Tk event loop."""
         if process.poll() is not None:
             return
+
+        def send(sig, fallback) -> None:
+            if os.name != "nt":
+                try:
+                    os.killpg(process.pid, sig)
+                    return
+                except OSError:
+                    pass
+            fallback()
+
         try:
-            process.terminate()
+            send(signal.SIGTERM, process.terminate)
             process.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             try:
-                process.kill()
+                send(getattr(signal, "SIGKILL", signal.SIGTERM), process.kill)
             except Exception:
                 pass
         except Exception:
@@ -1464,9 +1877,13 @@ class StackcopyGUI(ctk.CTk):
         if self._plan_slow_after is not None:
             self.after_cancel(self._plan_slow_after)
             self._plan_slow_after = None
+        self._scan_found = None
         if scanning:
             self.source_scan_var.set("Scanning card…")
             self.source_scan_progress.grid()
+            if self.source_scan_progress.cget("mode") != "indeterminate":
+                self.source_scan_progress.configure(mode="indeterminate")
+                was_scanning = False
             if not was_scanning:
                 self.source_scan_progress.start()
         else:
@@ -1482,6 +1899,25 @@ class StackcopyGUI(ctk.CTk):
             self.source_scan_var.set(
                 "Scanning card… this can take a moment on a large card."
             )
+
+    def _show_plan_progress(self, fields: dict[str, str]) -> None:
+        if fields.get("phase") == "scanned":
+            self._scan_found = int(fields.get("files", "0") or 0)
+        text = scan_progress_text(fields, self._scan_found)
+        if text is None:
+            return
+        # Real progress replaces the generic "this can take a moment" hint.
+        if self._plan_slow_after is not None:
+            self.after_cancel(self._plan_slow_after)
+            self._plan_slow_after = None
+        self.source_scan_var.set(text)
+        total = int(fields.get("total", "0") or 0)
+        if fields.get("phase") == "metadata" and total:
+            if self.source_scan_progress.cget("mode") != "determinate":
+                self.source_scan_progress.stop()
+                self.source_scan_progress.configure(mode="determinate")
+            done = int(fields.get("done", "0") or 0)
+            self.source_scan_progress.set(min(done, total) / total)
 
     def _refresh_idle_plan(self) -> None:
         plan = self._plan
@@ -1560,7 +1996,12 @@ class StackcopyGUI(ctk.CTk):
         )
 
     def _apply_plan(self, payload: dict[str, object] | None) -> None:
-        self._plan = payload
+        self._plan = (
+            update_plan_destinations(
+                payload, self.dst_var.get().strip(), self.stk_var.get().strip()
+            )
+            if payload is not None else None
+        )
         self._refresh_exiftool_status()
         self._set_plan_scanning(False)
         if payload is None:
@@ -1664,6 +2105,7 @@ class StackcopyGUI(ctk.CTk):
         args, lightroom, stack_input, _preview = self._pending
         command, env = cli_command(args)
         env["STACKCOPY_PROGRESS"] = "1"
+        env["STACKCOPY_METADATA_CACHE"] = metadata_cache_path()
         env["STACKCOPY_LOW_SPACE_REPORT"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = lightroom
@@ -1678,6 +2120,9 @@ class StackcopyGUI(ctk.CTk):
         self._terminated_by_user = False
         self._log_lines = []
         self._started_at = time.perf_counter()
+        self._transfer_started_at = None
+        self._progress_total_bytes = None
+        self._progress_done_bytes = None
         self._total = int(self._plan["total"]) if self._plan else 0
         self._done = 0
         self._current_role = None
@@ -1771,6 +2216,14 @@ class StackcopyGUI(ctk.CTk):
                     generation, plan = payload
                     if generation == self._plan_generation and not self._running:
                         self._apply_plan(plan)
+                elif kind == "plan_progress":
+                    generation, fields = payload
+                    if (
+                        generation == self._plan_generation
+                        and self._plan_scanning
+                        and not self._running
+                    ):
+                        self._show_plan_progress(fields)
                 elif kind == "out":
                     self._log_write(payload)
                 elif kind == "err":
@@ -1793,6 +2246,8 @@ class StackcopyGUI(ctk.CTk):
                     )
                 elif kind == "update":
                     self._handle_update_result(payload)
+                elif kind == "cards":
+                    self._handle_cards(payload)
                 elif kind == "done":
                     self._handle_done(int(payload))
         except queue.Empty:
@@ -1805,10 +2260,18 @@ class StackcopyGUI(ctk.CTk):
         total = int(fields.get("total", "0") or 0)
         done = int(fields.get("done", "0") or 0)
         if phase == "scan":
+            self._scan_found = None
             self.phase_var.set("Scanning card…")
             self.current_file_var.set(
                 "Reading photo dates and looking for finished camera stacks…"
             )
+            return
+        if phase in {"scanned", "metadata"}:
+            if phase == "scanned":
+                self._scan_found = int(fields.get("files", "0") or 0)
+            text = scan_progress_text(fields, self._scan_found)
+            if text is not None:
+                self.current_file_var.set(text)
             return
         if phase == "prepare":
             self._total = total
@@ -1819,11 +2282,23 @@ class StackcopyGUI(ctk.CTk):
             return
         if phase == "start":
             self._total = total
+            self._done = 0
+            self._transfer_started_at = time.perf_counter()
+            self._progress_total_bytes = (
+                int(fields["bytes_total"]) if "bytes_total" in fields else None
+            )
+            self._progress_done_bytes = (
+                0 if self._progress_total_bytes is not None else None
+            )
             self.progress.stop()
             self.progress.configure(mode="determinate")
             self.progress.set(0)
             self.phase_var.set("Preparing…" if total else "Nothing found")
             return
+        if "bytes_done" in fields:
+            self._progress_done_bytes = int(fields["bytes_done"])
+        if "bytes_total" in fields:
+            self._progress_total_bytes = int(fields["bytes_total"])
         if phase in {"move", "copy"}:
             role = fields.get("role", "other")
             self._current_role = role if role in self._bucket_done else "other"
@@ -1851,6 +2326,7 @@ class StackcopyGUI(ctk.CTk):
             self._total = total or self._total
             self._degraded = fields.get("degraded") == "1"
             self.progress.set(done / self._total if self._total else 0)
+            self._update_meta()
             self._update_counter_cards()
 
     def _set_phase_heading(self, role: str) -> None:
@@ -1902,16 +2378,27 @@ class StackcopyGUI(ctk.CTk):
         if not self._total:
             self.meta_var.set("")
             return
-        total_bytes = int(self._plan.get("bytes", 0)) if self._plan else 0
-        processed_bytes = (
-            int(total_bytes * self._done / self._total) if total_bytes else 0
-        )
         pieces = [f"{self._done} of {self._total} files"]
-        if total_bytes:
-            pieces.append(format_bytes(processed_bytes))
-        elapsed = max(0.001, time.perf_counter() - self._started_at)
-        if self._done and self._done < self._total:
-            pieces.append(format_eta(elapsed / self._done * (self._total - self._done)))
+        if self._progress_done_bytes is not None:
+            pieces.append(format_bytes(self._progress_done_bytes))
+        preview = self._pending is not None and self._pending[3]
+        if (
+            self._transfer_started_at is not None
+            and self._done < self._total
+            and not preview
+        ):
+            remaining = estimate_remaining_seconds(
+                time.perf_counter() - self._transfer_started_at,
+                self._done,
+                self._total,
+                self._progress_done_bytes,
+                self._progress_total_bytes,
+            )
+            pieces.append(
+                format_eta(remaining)
+                if remaining is not None
+                else "Estimating time left…"
+            )
         self.meta_var.set(" · ".join(pieces))
 
     def _bucket_total(self, role: str) -> int | None:
@@ -2151,9 +2638,9 @@ class StackcopyGUI(ctk.CTk):
             if os.name == "nt":
                 os.startfile(path)  # type: ignore[attr-defined]
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
+                subprocess.Popen(["open", path], env=folder_opener_environment())
             else:
-                subprocess.Popen(["xdg-open", path])
+                subprocess.Popen(["xdg-open", path], env=folder_opener_environment())
         except Exception as exc:
             messagebox.showerror("Stackcopy", f"Could not open folder:\n{exc}")
 
@@ -2490,7 +2977,22 @@ class StackcopyGUI(ctk.CTk):
 def main() -> None:
     ctk.set_appearance_mode("system")
     ctk.set_default_color_theme("blue")
-    StackcopyGUI().mainloop()
+    scale = 1.0
+    if sys.platform.startswith("linux"):
+        scale = linux_display_scale(xft_dpi=_read_xft_dpi())
+        if scale != 1.0:
+            ctk.set_widget_scaling(scale)
+            ctk.set_window_scaling(scale)
+    app = StackcopyGUI()
+    if scale != 1.0:
+        # customtkinter scales its own widgets, but the Tk folder picker and
+        # message boxes use Tk's point-sized fonts, which follow "tk scaling".
+        try:
+            current = float(app.tk.call("tk", "scaling"))
+            app.tk.call("tk", "scaling", current * scale)
+        except Exception:
+            pass
+    app.mainloop()
 
 
 if __name__ == "__main__":

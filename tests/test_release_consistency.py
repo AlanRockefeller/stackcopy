@@ -68,7 +68,7 @@ class ChangelogParsingTests(unittest.TestCase):
         self.assertIn("1.6.0", versions)
         self.assertIn("1.5.9", versions)
         self.assertIn("1.5.4", versions)  # ## \*\*1.5.4 - ...
-        self.assertIn("1.5.2", versions)  # ## **[1.5.2] — ...
+        self.assertIn("1.5.2", versions)  # ## **[1.5.2] - ...
         self.assertIn("1.2", versions)  # ## Version 1.2 - ...
         self.assertNotIn("", versions)
 
@@ -85,10 +85,10 @@ class ChangelogParsingTests(unittest.TestCase):
         for heading, expected in (
             ("**1.6.0 - 2026-08-24**", "1.6.0"),
             ("\\*\\*1.5.4 - 2026-04-10", "1.5.4"),
-            ("**[1.5.2] — 2026-01-31**", "1.5.2"),
+            ("**[1.5.2] - 2026-01-31**", "1.5.2"),
             ("Version 1.2 - 2025-11-20", "1.2"),
             ("Release 2.0", "2.0"),
-            ("[1.5] — 2026-01-19", "1.5"),
+            ("[1.5] - 2026-01-19", "1.5"),
             ("**Unreleased**", None),
             ("Change Log", None),
             ("Notes", None),

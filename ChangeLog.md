@@ -1,5 +1,18 @@
 # Change Log
 
+## **1.6.2 - 2026-10-10**
+
+- **Card scans are much faster.** Stackcopy uses ExifTool to read the stack information in each JPEG, and it used to do that one batch at a time on a single CPU core. It now runs several ExifTool processes at once. On an 8-core laptop, a card with about 2,000 JPEGs now scans in under 10 seconds instead of about 30.
+- **Move Files no longer scans the card a second time.** The GUI remembers what the preview scan read from each JPEG, so the import gets going almost right away. Any file that changed after the preview is read again. The GUI only keeps this for as long as it is open, and forgets it whenever a card is inserted or removed, so a different card with the same file names is always read fresh.
+- **You can see what the scan is doing.** While it runs, the GUI shows how many photos and videos it found and how many JPEGs it has checked for camera stacks so far, and the progress bar fills up as it goes.
+- **Picking a different card or folder during a scan now stops the old scan's ExifTool processes** on Linux and macOS. They used to keep running in the background until they finished.
+- **The time remaining estimate is based on data copied, not files.** It used to divide the time so far by the number of files done, so large videos and RAW files threw it off, and so did the time spent scanning. It now uses the average copy speed since the first file started. It shows up after 15 seconds and five files, and it isn't shown for previews.
+- **The GUI finds your camera card on its own.** If a card with a DCIM folder is plugged in, Stackcopy picks it as the source when it starts, or when you insert the card while the window is open. A card that is plugged in wins over the folder you used last time.
+- **The GUI is sized properly on Linux HiDPI screens.** Stackcopy reads `GDK_SCALE`, `QT_SCALE_FACTOR` or the X11 `Xft.dpi` setting. Set `STACKCOPY_UI_SCALE` to pick a size yourself. The folder picker on X11 is bigger too, since Tk's default one is tiny.
+- **Added Tk install instructions for Arch Linux** (`sudo pacman -S tk`) to the README and to the message shown when Tk is missing.
+- **Changing a destination folder no longer rescans the card.** The preview of where files will go, including the list of dated folders, updates right away from the scan that already ran. If you change a folder while a scan is running, the finished scan shows the new folder. Imports still check the card and the destinations before moving anything.
+- **Opening the Lightroom folder works properly on Linux when Stackcopy runs from a Python virtual environment.** The file manager used to inherit Stackcopy's Python settings, which could make Nautilus show "No module named 'gi'" errors. Stackcopy now opens the folder without those settings.
+
 ## **1.6.1 - 2026-09-21**
 
 - **The Lightroom destination and stack-input folder no longer have to be different.** The GUI used to refuse to start if you pointed both at the same folder. Pointing them at the same place is a fine way to use Stackcopy as a plain, reorganizing photo importer: stack inputs and everything else land in the same dated folders, and stacked outputs still get their renamed " stacked" suffix.
@@ -87,11 +100,11 @@
 
 - **Pre-flight disk space safety checks** for operations that write to a destination filesystem:
   - Before executing **cross-device moves** in Lightroom/Lightroom Import modes.
-  - Before moving **“remaining files”** into the Lightroom import directory structure.
+  - Before moving **"remaining files"** into the Lightroom import directory structure.
   - Before **copy/stackcopy** operations (including correct destination filename calculation when `--prefix` or `--stackcopy` is used).
 - **User confirmation prompt** when the destination filesystem is low on space, showing:
   - Current free space, estimated required space for the pending operations, estimated free space after, and a reserve threshold.
-  - “Overflow by X” messaging when the operation would exceed available space.
+  - "Overflow by X" messaging when the operation would exceed available space.
 - **Filesystem confirmation cache** to avoid prompting repeatedly for the same destination device during a single run.
 
 ### Safety
@@ -102,7 +115,7 @@
 
 - Added collision-safe naming for Lightroom/Lightroom Import moves: if a destination filename already exists, Stackcopy appends a shared `__N` suffix (keeps JPG+RAW paired) instead of overwriting.
 - Always prints a brief notice when a rename happens due to a destination collision (even without `--verbose`), usually caused by camera/card counter resets.
-- Improved “remaining files” handling by grouping moves per destination folder and keeping in-memory paths/basenames consistent after moves.
+- Improved "remaining files" handling by grouping moves per destination folder and keeping in-memory paths/basenames consistent after moves.
 
 ## **[1.5] - 2026-01-19**
 
@@ -111,11 +124,11 @@
     - `MAX_OUTPUT_LAG_SECONDS` (120s): Allows time for camera to stack and save (Output -> Input 1).
     - `MAX_INPUT_GAP_SECONDS` (6s): Enforces tight buffering for subsequent frames (Input N -> Input N+1).
   - Maintains strict 2.0s burst safety check to reject focus brackets.
-- **Robust Move Tracking**:
+- **More reliable move tracking**:
   - Added atomic tracking of "expected" vs "successful" moves per stem.
   - Stems are only marked as "processed" (and excluded from remaining logic) if _all_ constituent files (JPG+RAW) move successfully.
 - **Partial Failure Mitigation**:
-  - Remaining-files logic now gracefully handles missing sources (caused by partial moves) without reporting spurious errors.
+  - Remaining-files logic now handles missing sources (caused by partial moves) without reporting spurious errors.
 - **Thread Safety**:
   - Refactored parallel move execution to be fully thread-safe and race-free.
 
@@ -151,7 +164,7 @@ Very helpful for troubleshooting stack detection issues
 
 - Lightroom mode now processes stacked output JPGs _even if already renamed_ (i.e., containing `"stacked"` in filename).
 - Cross-filesystem safe move handling:
-  - Falls back to `copyfile + unlink` instead of `shutil.move()` for SD→disk transfers.
+  - Falls back to `copyfile + unlink` instead of `shutil.move()` for SD-card-to-disk transfers.
 - File deduplication based on content comparison:
   - If destination exists and files are identical:
     - In **move mode**: source is deleted and operation succeeds.
@@ -160,7 +173,7 @@ Very helpful for troubleshooting stack detection issues
 
 ### **Improved**
 
-- `mtime` is now lazily loaded (`get_file_mtime()`) ensuring accurate timestamp comparison when identifying input frames.
+- `mtime` is now lazily loaded (`get_file_mtime()`), so timestamps compare correctly when identifying input frames.
 - Lightroom summary now reports:
   - Number of stacked outputs _processed_, not just renamed.
   - Count of RAW/JPG input files moved.
@@ -187,7 +200,7 @@ The fix changes the burst detection to compare timestamps between consecutive ra
 
 ### Added
 
-- `--lightroom` mode: A new mode to streamline the workflow for processing in-camera stacks for use with Adobe Lightroom. The idea is that you run this on the photos on the camera card before you import to lightroom so you only import the files you need, not all the input files to the stack.
+- `--lightroom` mode: A new mode for processing in-camera stacks for use with Adobe Lightroom. The idea is that you run this on the photos on the camera card before you import to lightroom so you only import the files you need, not all the input files to the stack.
 - Identifies in-camera photo stacks (3-15 input files and one output file).
 - Moves the input files (both JPG and ORF) of identified stacks to a dated directory structure (e.g., `/home/alan/pictures/olympus.stack.input.photos/2025/2025-10-30/`).
 - Renames the stacked output JPG in its original directory.

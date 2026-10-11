@@ -1,6 +1,8 @@
 """Display-free helper coverage for the explanatory GUI."""
 
 import json
+import os
+import shutil
 import sys
 import types
 import unittest
@@ -65,6 +67,63 @@ def plan_payload(**changes):
     return payload
 
 
+class FolderOpenerEnvironmentTests(unittest.TestCase):
+    def test_venv_paths_are_removed_without_changing_parent_or_desktop_settings(self):
+        venv = os.path.abspath("test-venv")
+        bin_dir = os.path.join(venv, "bin")
+        original = {
+            "PATH": os.pathsep.join((bin_dir, "/usr/local/bin", "/usr/bin")),
+            "VIRTUAL_ENV": venv,
+            "PYTHONHOME": venv,
+            "PYTHONPATH": "/custom/python",
+            "DISPLAY": ":1",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/session/bus",
+        }
+        with mock.patch.dict(os.environ, original, clear=True), mock.patch.object(
+            sys, "prefix", venv
+        ), mock.patch.object(sys, "base_prefix", "/system"), mock.patch.object(
+            sys, "exec_prefix", venv
+        ):
+            env = gui.folder_opener_environment()
+            self.assertEqual(dict(os.environ), original)
+        self.assertEqual(env["PATH"], os.pathsep.join(("/usr/local/bin", "/usr/bin")))
+        for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["DISPLAY"], original["DISPLAY"])
+        self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], original["DBUS_SESSION_BUS_ADDRESS"])
+
+    def test_direct_venv_python_is_handled_without_activation(self):
+        venv = os.path.abspath("test-venv")
+        with mock.patch.dict(os.environ, {
+            "PATH": os.pathsep.join((os.path.join(venv, "bin"), "/usr/bin")),
+        }, clear=True), mock.patch.object(sys, "prefix", venv), mock.patch.object(
+            sys, "base_prefix", "/system"
+        ), mock.patch.object(sys, "exec_prefix", venv):
+            self.assertEqual(gui.folder_opener_environment()["PATH"], "/usr/bin")
+
+    def test_frozen_linux_restores_original_library_path(self):
+        for original in (None, "", "/system/libs"):
+            variables = {"LD_LIBRARY_PATH": "/bundled/libs"}
+            if original is not None:
+                variables["LD_LIBRARY_PATH_ORIG"] = original
+            with mock.patch.dict(os.environ, variables, clear=True), mock.patch.object(
+                sys, "frozen", True, create=True
+            ), mock.patch.object(sys, "platform", "linux"):
+                env = gui.folder_opener_environment()
+            self.assertEqual(env.get("LD_LIBRARY_PATH"), original or None)
+
+    def test_linux_folder_button_passes_clean_environment(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._last_dest = "/photos"
+        with mock.patch.object(gui.os.path, "isdir", return_value=True), mock.patch.object(
+            gui.os, "name", "posix"
+        ), mock.patch.object(sys, "platform", "linux"), mock.patch.object(
+            gui, "folder_opener_environment", return_value={"PATH": "/usr/bin"}
+        ), mock.patch.object(gui.subprocess, "Popen") as popen:
+            gui.StackcopyGUI._open_dest(window)
+        popen.assert_called_once_with(["xdg-open", "/photos"], env={"PATH": "/usr/bin"})
+
+
 class PlanParserTests(unittest.TestCase):
     def test_valid_payload_is_normalized(self):
         parsed = gui.parse_plan_json(json.dumps(plan_payload()))
@@ -114,6 +173,71 @@ class DatedFolderSummaryTests(unittest.TestCase):
         self.assertIn("2026-08-23 to 2026-08-25", summary)
         self.assertIn("3 dated folders", summary)
         self.assertEqual(folders, dirs)
+
+
+class DestinationChangeTests(unittest.TestCase):
+    def test_paths_follow_dates_for_each_destination_without_changing_counts(self):
+        plan = plan_payload(
+            dest_lightroom_dates=["2026-08-23", "2026-08-25"],
+            dest_stack_input_dates=["2026-08-25"],
+        )
+        updated = gui.update_plan_destinations(plan, "/photos", "/inputs")
+        self.assertEqual(updated["dest_lightroom"], os.path.join("/photos", "2026", "2026-08-25"))
+        self.assertEqual(updated["dest_stack_input"], os.path.join("/inputs", "2026", "2026-08-25"))
+        self.assertEqual(updated["dest_dirs"], [
+            os.path.join("/inputs", "2026", "2026-08-25"),
+            os.path.join("/photos", "2026", "2026-08-23"),
+            os.path.join("/photos", "2026", "2026-08-25"),
+        ])
+        self.assertEqual(updated["total"], plan["total"])
+        self.assertEqual(updated["bytes"], plan["bytes"])
+        self.assertNotEqual(updated["dest_lightroom"], plan["dest_lightroom"])
+
+    def test_shared_destinations_can_split_and_merge_without_losing_roles(self):
+        plan = plan_payload(
+            dest_lightroom_dates=["2026-08-25"],
+            dest_stack_input_dates=["2026-08-25"],
+        )
+        merged = gui.update_plan_destinations(plan, "/shared", "/shared")
+        self.assertEqual(merged["dest_dirs"], [os.path.join("/shared", "2026", "2026-08-25")])
+        split = gui.update_plan_destinations(merged, "/photos", "/inputs")
+        self.assertEqual(len(split["dest_dirs"]), 2)
+
+    def test_destination_change_preserves_completed_or_pending_scan(self):
+        for plan in (None, plan_payload()):
+            window = mock.Mock(spec=gui.StackcopyGUI)
+            window._plan = plan
+            window._plan_generation = 7
+            window.dst_var = mock.Mock()
+            window.dst_var.get.return_value = "/photos"
+            window.stk_var = mock.Mock()
+            window.stk_var.get.return_value = "/inputs"
+            gui.StackcopyGUI._on_destination_changed(window)
+            window._schedule_plan_scan.assert_not_called()
+            window._cancel_plan_scan.assert_not_called()
+            self.assertEqual(window._plan_generation, 7)
+            window._refresh_idle_plan.assert_called_once()
+
+    def test_scan_result_uses_current_destinations(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window.dst_var = mock.Mock()
+        window.dst_var.get.return_value = "/latest/photos"
+        window.stk_var = mock.Mock()
+        window.stk_var.get.return_value = "/latest/inputs"
+        window.source_scan_var = mock.Mock()
+        gui.StackcopyGUI._apply_plan(window, plan_payload(
+            dest_lightroom_dates=["2026-08-25"],
+            dest_stack_input_dates=["2026-08-25"],
+        ))
+        self.assertEqual(window._plan["dest_lightroom"], os.path.join("/latest/photos", "2026", "2026-08-25"))
+        self.assertEqual(window._plan["dest_stack_input"], os.path.join("/latest/inputs", "2026", "2026-08-25"))
+
+    def test_empty_plan_uses_destination_roots(self):
+        updated = gui.update_plan_destinations(
+            plan_payload(newest_date=None), "/photos", "/inputs"
+        )
+        self.assertEqual(updated["dest_lightroom"], "/photos")
+        self.assertEqual(updated["dest_dirs"], [])
 
 
 class OtherCardFilesTests(unittest.TestCase):
@@ -204,11 +328,144 @@ class PlanScanActivityTests(unittest.TestCase):
         window.source_scan_var = mock.Mock()
         window.start_btn = mock.Mock()
 
+        window.source_scan_progress.cget.return_value = "indeterminate"
+
         gui.StackcopyGUI._set_plan_scanning(window, True)
         gui.StackcopyGUI._set_plan_scanning(window, True)
         gui.StackcopyGUI._set_plan_scanning(window, True)
 
         window.source_scan_progress.start.assert_called_once_with()
+
+    def test_a_rescan_returns_a_filling_bar_to_activity_mode(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._plan_scanning = True
+        window._running = False
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_progress.cget.return_value = "determinate"
+        window.source_scan_var = mock.Mock()
+        window.start_btn = mock.Mock()
+
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+
+        window.source_scan_progress.configure.assert_called_once_with(
+            mode="indeterminate"
+        )
+        window.source_scan_progress.start.assert_called_once_with()
+
+    def test_metadata_progress_fills_the_scan_bar_and_names_the_counts(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._scan_found = None
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_progress.cget.return_value = "indeterminate"
+        window.source_scan_var = mock.Mock()
+
+        gui.StackcopyGUI._show_plan_progress(
+            window, {"phase": "scanned", "files": "3460", "other": "3"}
+        )
+        gui.StackcopyGUI._show_plan_progress(
+            window, {"phase": "metadata", "done": "450", "total": "1800"}
+        )
+
+        window.source_scan_var.set.assert_called_with(
+            "Found 3,460 photos and videos - checking 1,800 JPEGs for camera "
+            "stacks (450 of 1,800)…"
+        )
+        window.source_scan_progress.stop.assert_called_once_with()
+        window.source_scan_progress.configure.assert_called_once_with(
+            mode="determinate"
+        )
+        window.source_scan_progress.set.assert_called_once_with(0.25)
+
+
+class ScanProgressTextTests(unittest.TestCase):
+    def test_found_files_are_reported_as_soon_as_the_walk_finishes(self):
+        self.assertEqual(
+            gui.scan_progress_text({"phase": "scanned", "files": "12"}, 12),
+            "Found 12 photos and videos",
+        )
+        self.assertEqual(
+            gui.scan_progress_text({"phase": "scanned", "files": "1"}, 1),
+            "Found 1 photo or video",
+        )
+
+    def test_metadata_progress_without_a_walk_count_still_reads_naturally(self):
+        self.assertEqual(
+            gui.scan_progress_text(
+                {"phase": "metadata", "done": "1", "total": "1"}, None
+            ),
+            "Checking 1 JPEG for camera stacks (1 of 1)…",
+        )
+
+    def test_other_phases_and_empty_metadata_are_not_described(self):
+        self.assertIsNone(gui.scan_progress_text({"phase": "copy"}, 5))
+        self.assertIsNone(
+            gui.scan_progress_text({"phase": "metadata", "total": "0"}, 5)
+        )
+
+    def test_metadata_cache_lives_in_a_private_session_directory(self):
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            path = gui.metadata_cache_path()
+            try:
+                self.assertEqual(os.path.basename(path), gui.METADATA_CACHE_FILENAME)
+                cache_dir = os.path.dirname(path)
+                self.assertTrue(os.path.isdir(cache_dir))
+                self.assertTrue(
+                    os.path.basename(cache_dir).startswith("stackcopy-metadata-")
+                )
+                # Every scan and import in one session shares the same file.
+                self.assertEqual(gui.metadata_cache_path(), path)
+            finally:
+                shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+    def test_a_new_session_does_not_inherit_the_previous_cache(self):
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            first = gui.metadata_cache_path()
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            second = gui.metadata_cache_path()
+        try:
+            self.assertNotEqual(os.path.dirname(first), os.path.dirname(second))
+        finally:
+            shutil.rmtree(os.path.dirname(first), ignore_errors=True)
+            shutil.rmtree(os.path.dirname(second), ignore_errors=True)
+
+    def test_clearing_the_metadata_cache_removes_its_file(self):
+        with mock.patch.object(gui, "_metadata_cache_dir", None):
+            path = gui.metadata_cache_path()
+            try:
+                Path(path).write_text("{}", encoding="utf-8")
+                gui.clear_metadata_cache()
+                self.assertFalse(os.path.exists(path))
+                gui.clear_metadata_cache()  # already gone: still fine
+            finally:
+                shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+    def test_card_change_clears_the_cache_and_rescans_a_reinserted_source(self):
+        app = types.SimpleNamespace(
+            _card_poll_busy=True,
+            _known_cards=set(),
+            _running=False,
+            src_var=mock.Mock(get=mock.Mock(return_value="/media/card/DCIM")),
+            _on_path_changed=mock.Mock(),
+        )
+        with mock.patch.object(gui, "clear_metadata_cache") as clear:
+            gui.StackcopyGUI._handle_cards(app, ["/media/card"])
+        clear.assert_called_once_with()
+        app._on_path_changed.assert_called_once_with()
+
+    def test_an_unchanged_card_set_keeps_the_cache(self):
+        app = types.SimpleNamespace(
+            _card_poll_busy=True,
+            _known_cards={"/media/card"},
+            _running=False,
+            src_var=mock.Mock(get=mock.Mock(return_value="/media/card")),
+            _on_path_changed=mock.Mock(),
+        )
+        with mock.patch.object(gui, "clear_metadata_cache") as clear:
+            gui.StackcopyGUI._handle_cards(app, ["/media/card"])
+        clear.assert_not_called()
+        app._on_path_changed.assert_not_called()
 
 
 class ResultCardNoticeTests(unittest.TestCase):
@@ -315,6 +572,67 @@ class ConditionalScrollbarTests(unittest.TestCase):
         window.body.winfo_reqheight.return_value = 750
         gui.StackcopyGUI._update_body_scrollbar(window)
         window.body._scrollbar.grid.assert_called_once_with()
+
+
+class TimeRemainingTests(unittest.TestCase):
+    def test_waits_for_both_time_and_file_warmup(self):
+        self.assertIsNone(gui.estimate_remaining_seconds(14, 20, 100, 200, 1000))
+        self.assertIsNone(gui.estimate_remaining_seconds(60, 4, 100, 200, 1000))
+        self.assertEqual(gui.estimate_remaining_seconds(15, 5, 100, 200, 1000), 60)
+
+    def test_mixed_file_sizes_do_not_change_estimate_at_constant_byte_rate(self):
+        # Five small JPGs, then a large RAW: file count makes the ETA jump,
+        # while byte throughput correctly predicts the same finishing time.
+        early = gui.estimate_remaining_seconds(20, 5, 100, 100, 1000)
+        later = gui.estimate_remaining_seconds(40, 6, 100, 200, 1000)
+        self.assertEqual(early, 180)
+        self.assertEqual(later, 160)
+        self.assertEqual(20 + early, 40 + later)
+
+    def test_handles_no_work_and_completion(self):
+        for done, total, completed_bytes, total_bytes in (
+            (0, 0, 0, 0), (0, 100, 0, 1000), (5, 100, 0, 1000),
+            (5, 100, 0, 0), (5, 100, 1000, 1000), (100, 100, 1000, 1000),
+        ):
+            with self.subTest(done=done, total=total, completed_bytes=completed_bytes):
+                self.assertIsNone(gui.estimate_remaining_seconds(
+                    60, done, total, completed_bytes, total_bytes
+                ))
+
+    def test_old_cli_can_fall_back_to_file_count(self):
+        self.assertEqual(gui.estimate_remaining_seconds(20, 5, 50), 180)
+
+    def test_gui_excludes_preparation_and_uses_current_import_byte_counts(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._started_at = 400  # Ten minutes of scanning and safety checks.
+        window._pending = None
+        window._plan = plan_payload(bytes=999999999)
+        window._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
+        for name in ("progress", "phase_var", "current_file_var", "meta_var"):
+            setattr(window, name, mock.Mock())
+        window._update_meta.side_effect = lambda: gui.StackcopyGUI._update_meta(window)
+        with mock.patch.object(gui.time, "perf_counter", side_effect=[1000, 1030]):
+            gui.StackcopyGUI._handle_progress(
+                window, "@@SCPROGRESS phase=start done=0 total=10 bytes_total=10240"
+            )
+            gui.StackcopyGUI._handle_progress(
+                window, "@@SCPROGRESS phase=copy done=5 total=10 "
+                "bytes_done=2048 bytes_total=10240 role=other file=A.ORF"
+            )
+        window.meta_var.set.assert_called_with(
+            "5 of 10 files · 2.0 KB · about 2 minutes left"
+        )
+
+        # Preview work has no transfer ETA, and completion clears the ETA.
+        window._pending = ([], "", "", True)
+        gui.StackcopyGUI._update_meta(window)
+        window.meta_var.set.assert_called_with("5 of 10 files · 2.0 KB")
+        window._pending = None
+        gui.StackcopyGUI._handle_progress(
+            window, "@@SCPROGRESS phase=done done=10 total=10 "
+            "bytes_done=10240 bytes_total=10240"
+        )
+        window.meta_var.set.assert_called_with("10 of 10 files · 10.0 KB")
 
 
 class ProgressParserTests(unittest.TestCase):
@@ -439,6 +757,70 @@ class TerminalSummaryTests(unittest.TestCase):
             "Done. Imported 348 files in 18.4 seconds\n"
         )
         self.assertEqual(parsed, {"problems": 0, "imported": 348})
+
+
+class CardDetectionTests(unittest.TestCase):
+    MOUNTS = (
+        "/dev/nvme0n1p5 /boot vfat rw 0 0\n"
+        "/dev/mmcblk0p1 /run/media/alan/OM\\040SYSTEM exfat rw 0 0\n"
+        "server:/share /mnt/photos nfs4 rw 0 0\n"
+        "/dev/sdb1 /media/usb vfat rw 0 0\n"
+        "C:\\134 /mnt/c 9p rw 0 0\n"
+        "portal /run/user/1000/doc fuse.portal rw 0 0\n"
+    )
+
+    def test_linux_candidates_are_removable_mounts_with_decoded_names(self):
+        self.assertEqual(
+            gui._linux_card_candidates(self.MOUNTS),
+            ["/run/media/alan/OM SYSTEM", "/media/usb", "/mnt/c"],
+        )
+
+    def test_inserted_card_replaces_a_remembered_non_card_folder(self):
+        with mock.patch.object(gui, "path_is_within", lambda p, r: p.startswith(r)):
+            self.assertEqual(
+                gui.choose_startup_source("/home/me/old", ["/media/CARD"]),
+                "/media/CARD",
+            )
+            self.assertEqual(
+                gui.choose_startup_source("/media/CARD/DCIM", ["/media/CARD"]),
+                "/media/CARD/DCIM",
+            )
+            self.assertEqual(gui.choose_startup_source("/home/me/old", []), "/home/me/old")
+            self.assertEqual(gui.choose_startup_source("", []), "")
+
+    def test_find_camera_cards_requires_a_dcim_folder(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as root:
+            card = Path(root, "card")
+            (card / "DCIM").mkdir(parents=True)
+            disk = Path(root, "disk")
+            disk.mkdir()
+            with mock.patch.object(gui.os, "name", "posix"), mock.patch.object(
+                gui.sys, "platform", "linux"
+            ), mock.patch.object(
+                gui, "_linux_card_candidates", return_value=[str(card), str(disk)]
+            ), mock.patch("builtins.open", mock.mock_open(read_data="")):
+                self.assertEqual(gui.find_camera_cards(), [str(card)])
+
+
+class DisplayScaleTests(unittest.TestCase):
+    def test_override_then_gdk_then_qt_then_xft(self):
+        self.assertEqual(
+            gui.linux_display_scale({"STACKCOPY_UI_SCALE": "1.5", "GDK_SCALE": "2"}),
+            1.5,
+        )
+        self.assertEqual(gui.linux_display_scale({"GDK_SCALE": "2"}), 2.0)
+        self.assertEqual(
+            gui.linux_display_scale({"GDK_SCALE": "2", "GDK_DPI_SCALE": "0.75"}), 1.5
+        )
+        self.assertEqual(gui.linux_display_scale({"QT_SCALE_FACTOR": "1.25"}), 1.25)
+        self.assertEqual(gui.linux_display_scale({}, "Xft.dpi:\t192\n"), 2.0)
+        self.assertEqual(gui.linux_display_scale({}), 1.0)
+
+    def test_nonsense_hints_are_ignored(self):
+        self.assertEqual(gui.linux_display_scale({"GDK_SCALE": "banana"}), 1.0)
+        self.assertEqual(gui.linux_display_scale({"GDK_SCALE": "0"}), 1.0)
 
 
 if __name__ == "__main__":

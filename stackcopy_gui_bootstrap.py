@@ -41,7 +41,9 @@ def dependency_error_message(error: ImportError) -> str:
                 "Install Tk for your Python version. For Debian or Ubuntu, run:\n\n"
                 "sudo apt install python3-tk\n\n"
                 "On Fedora, run:\n\n"
-                "sudo dnf install python3-tkinter"
+                "sudo dnf install python3-tkinter\n\n"
+                "On Arch Linux, run:\n\n"
+                "sudo pacman -S tk"
             )
         return (
             "Stackcopy cannot start because Python's Tk GUI support is not installed.\n\n"
