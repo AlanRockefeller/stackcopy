@@ -13,6 +13,7 @@ import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -86,6 +87,7 @@ APP_NAME = "Stackcopy"
 # stackcopy module failed to load, in which case there is no version to show.
 APP_TITLE = f"{APP_NAME} {STACKCOPY_VERSION}".strip()
 SETTINGS_FILENAME = "gui-state.json"
+METADATA_CACHE_FILENAME = "stack-metadata-cache.json"
 CARD_POLL_MS = 2000
 MOVE_MODE = "Move off the card"
 COPY_MODE = "Copy, leave card untouched"
@@ -172,6 +174,32 @@ def parse_progress(line: str) -> tuple[dict[str, str], str | None]:
             key, value = token.split("=", 1)
             fields[key] = unquote(value) if key == "stack_output_name" else value
     return fields, filename
+
+
+def scan_progress_text(fields: dict[str, str], found: int | None) -> str | None:
+    """Describe a scan-phase progress event, or None for other phases."""
+    phase = fields.get("phase")
+    if found is None:
+        found_text = None
+    elif found == 1:
+        found_text = "Found 1 photo or video"
+    else:
+        found_text = f"Found {found:,} photos and videos"
+    if phase == "scanned":
+        return found_text
+    if phase == "metadata":
+        total = int(fields.get("total", "0") or 0)
+        done = int(fields.get("done", "0") or 0)
+        if not total:
+            return None
+        noun = "JPEG" if total == 1 else "JPEGs"
+        checking = (
+            f"{total:,} {noun} for camera stacks ({min(done, total):,} of {total:,})…"
+        )
+        if found_text is None:
+            return f"Checking {checking}"
+        return f"{found_text} - checking {checking}"
+    return None
 
 
 def parse_plan_json(text: str) -> dict[str, object] | None:
@@ -613,6 +641,19 @@ def _settings_path() -> Path:
     return base / APP_NAME / SETTINGS_FILENAME
 
 
+def metadata_cache_path() -> str:
+    """Where the CLI remembers camera stack metadata between plan and run."""
+    if os.name == "nt":
+        base = Path(
+            os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
+        )
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return str(base / APP_NAME / METADATA_CACHE_FILENAME)
+
+
 # gui-state.json began as a flat string-to-string map.  Booleans and numbers
 # are now stored as themselves - a settings file a human opens should say
 # ``true``, not ``"true"`` - but every reader below still accepts the old
@@ -898,6 +939,7 @@ class StackcopyGUI(ctk.CTk):
         self._plan_generation = 0
         self._plan_after: str | None = None
         self._plan_slow_after: str | None = None
+        self._scan_found: int | None = None
         self._save_state_scheduled = False
         self._pending: tuple[list[str], str, str, bool] | None = None
         self._assume_yes = False
@@ -1709,6 +1751,8 @@ class StackcopyGUI(ctk.CTk):
         if not self.detect_stacks_var.get():
             args.append("--no-stack-detection")
         command, env = cli_command(args)
+        env["STACKCOPY_PROGRESS"] = "1"
+        env["STACKCOPY_METADATA_CACHE"] = metadata_cache_path()
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = self.dst_var.get().strip()
         env["STACKCOPY_STACK_INPUT_DIR"] = self.stk_var.get().strip()
         threading.Thread(
@@ -1725,6 +1769,8 @@ class StackcopyGUI(ctk.CTk):
         )
         process: subprocess.Popen | None = None
         try:
+            # Its own process group, so a superseded scan can stop the
+            # ExifTool workers it started along with itself.
             process = subprocess.Popen(
                 command,
                 env=env,
@@ -1735,6 +1781,7 @@ class StackcopyGUI(ctk.CTk):
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creationflags,
+                start_new_session=os.name != "nt",
             )
             with self._plan_proc_lock:
                 superseded = generation != self._plan_generation or self._closing
@@ -1742,7 +1789,20 @@ class StackcopyGUI(ctk.CTk):
                     self._plan_proc = process
             if superseded:
                 self._stop_plan_process(process)
-            stdout, _stderr = process.communicate()
+
+            def pump_progress(stream) -> None:
+                for line in stream:
+                    if line.startswith(PROGRESS_SENTINEL):
+                        fields, _filename = parse_progress(line)
+                        self._queue.put(("plan_progress", (generation, fields)))
+
+            progress_thread = threading.Thread(
+                target=pump_progress, args=(process.stderr,), daemon=True
+            )
+            progress_thread.start()
+            stdout = process.stdout.read()
+            process.wait()
+            progress_thread.join()
             payload = parse_plan_json(stdout) if process.returncode == 0 else None
             self._queue.put(("plan", (generation, payload)))
         except Exception:
@@ -1757,12 +1817,22 @@ class StackcopyGUI(ctk.CTk):
         """Terminate a superseded scan without blocking the Tk event loop."""
         if process.poll() is not None:
             return
+
+        def send(sig, fallback) -> None:
+            if os.name != "nt":
+                try:
+                    os.killpg(process.pid, sig)
+                    return
+                except OSError:
+                    pass
+            fallback()
+
         try:
-            process.terminate()
+            send(signal.SIGTERM, process.terminate)
             process.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             try:
-                process.kill()
+                send(getattr(signal, "SIGKILL", signal.SIGTERM), process.kill)
             except Exception:
                 pass
         except Exception:
@@ -1783,9 +1853,13 @@ class StackcopyGUI(ctk.CTk):
         if self._plan_slow_after is not None:
             self.after_cancel(self._plan_slow_after)
             self._plan_slow_after = None
+        self._scan_found = None
         if scanning:
             self.source_scan_var.set("Scanning card…")
             self.source_scan_progress.grid()
+            if self.source_scan_progress.cget("mode") != "indeterminate":
+                self.source_scan_progress.configure(mode="indeterminate")
+                was_scanning = False
             if not was_scanning:
                 self.source_scan_progress.start()
         else:
@@ -1801,6 +1875,25 @@ class StackcopyGUI(ctk.CTk):
             self.source_scan_var.set(
                 "Scanning card… this can take a moment on a large card."
             )
+
+    def _show_plan_progress(self, fields: dict[str, str]) -> None:
+        if fields.get("phase") == "scanned":
+            self._scan_found = int(fields.get("files", "0") or 0)
+        text = scan_progress_text(fields, self._scan_found)
+        if text is None:
+            return
+        # Real progress replaces the generic "this can take a moment" hint.
+        if self._plan_slow_after is not None:
+            self.after_cancel(self._plan_slow_after)
+            self._plan_slow_after = None
+        self.source_scan_var.set(text)
+        total = int(fields.get("total", "0") or 0)
+        if fields.get("phase") == "metadata" and total:
+            if self.source_scan_progress.cget("mode") != "determinate":
+                self.source_scan_progress.stop()
+                self.source_scan_progress.configure(mode="determinate")
+            done = int(fields.get("done", "0") or 0)
+            self.source_scan_progress.set(min(done, total) / total)
 
     def _refresh_idle_plan(self) -> None:
         plan = self._plan
@@ -1988,6 +2081,7 @@ class StackcopyGUI(ctk.CTk):
         args, lightroom, stack_input, _preview = self._pending
         command, env = cli_command(args)
         env["STACKCOPY_PROGRESS"] = "1"
+        env["STACKCOPY_METADATA_CACHE"] = metadata_cache_path()
         env["STACKCOPY_LOW_SPACE_REPORT"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env["STACKCOPY_LIGHTROOM_IMPORT_DIR"] = lightroom
@@ -2098,6 +2192,14 @@ class StackcopyGUI(ctk.CTk):
                     generation, plan = payload
                     if generation == self._plan_generation and not self._running:
                         self._apply_plan(plan)
+                elif kind == "plan_progress":
+                    generation, fields = payload
+                    if (
+                        generation == self._plan_generation
+                        and self._plan_scanning
+                        and not self._running
+                    ):
+                        self._show_plan_progress(fields)
                 elif kind == "out":
                     self._log_write(payload)
                 elif kind == "err":
@@ -2134,10 +2236,18 @@ class StackcopyGUI(ctk.CTk):
         total = int(fields.get("total", "0") or 0)
         done = int(fields.get("done", "0") or 0)
         if phase == "scan":
+            self._scan_found = None
             self.phase_var.set("Scanning card…")
             self.current_file_var.set(
                 "Reading photo dates and looking for finished camera stacks…"
             )
+            return
+        if phase in {"scanned", "metadata"}:
+            if phase == "scanned":
+                self._scan_found = int(fields.get("files", "0") or 0)
+            text = scan_progress_text(fields, self._scan_found)
+            if text is not None:
+                self.current_file_var.set(text)
             return
         if phase == "prepare":
             self._total = total

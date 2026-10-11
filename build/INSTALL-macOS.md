@@ -135,11 +135,11 @@ To install ExifTool, open **Terminal** and run:
 (If you do not have Homebrew, follow the installer at <https://brew.sh/> first,
 or download ExifTool directly from <https://exiftool.org/>.)
 
-Stackcopy needs **ExifTool 12.41 or newer** — that is the release that learned
+Stackcopy needs **ExifTool 12.41 or newer**. That is the release that learned
 to read OM SYSTEM camera metadata. Quit and reopen Stackcopy afterwards; the
 line near the top of the window should then say:
 
-    ExifTool <version> — OM-1 stack metadata enabled
+    ExifTool <version> - OM System stack metadata enabled
 
 Stackcopy checks Homebrew's and MacPorts' usual install locations directly, so
 this works even though an app opened from Finder does not see the `PATH` your

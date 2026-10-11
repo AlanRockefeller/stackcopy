@@ -133,7 +133,7 @@ Grab the prebuilt app from the [Releases page](https://github.com/AlanRockefelle
 - **macOS** - `Stackcopy.dmg`: open it, drag **Stackcopy** to Applications, launch it.
 - **Windows** - `stackcopy-windows.zip`: unzip it, then double-click `Stackcopy.exe`.
   Keep `StackcopyCLI.exe` in the same folder; the GUI uses it for imports.
-  ExifTool 13.59 is bundled, so OM-1 camera stack metadata works out of the box.
+  ExifTool 13.59 is bundled, so OM-1 camera stack metadata works without installing anything else.
 
 macOS users who want OM-1 camera stack metadata should also run
 `brew install exiftool`. See [ExifTool](#exiftool).
@@ -180,7 +180,7 @@ python stackcopy_gui.py
 
 The only extra dependency is `customtkinter`. If you get a `tkinter` import
 error, install Tk for your platform (`brew install python-tk` on macOS, or your
-distro's Tk package on Linux — `python3-tk` on Debian/Ubuntu,
+distro's Tk package on Linux: `python3-tk` on Debian/Ubuntu,
 `python3-tkinter` on Fedora, `tk` on Arch; it's already included on Windows).
 
 ### Build the app yourself
@@ -414,7 +414,7 @@ downloaded at runtime.
 ExifTool 12.41 (March 2022) is the release that added `OM SYSTEM` MakerNote
 support. Before it, ExifTool only knew the older `OLYMPUS` signature, so an
 OM-1's MakerNote block is unrecognized and the `StackedImage` tag simply never
-appears. That is a hard capability floor, not a preference. Stackcopy 1.6.1 is
+appears. That is a hard capability floor, not a preference. Stackcopy 1.6.2 is
 tested against **ExifTool 13.59**, and newer is always fine.
 
 ### Why it matters
@@ -445,7 +445,7 @@ present, the heuristic is usually right.
 
 ```bash
 exiftool -ver          # your ExifTool, e.g. 13.59
-./stackcopy.py --version   # Stackcopy 1.6.1
+./stackcopy.py --version   # Stackcopy 1.6.2
 ```
 
 Every Lightroom-mode run also says so itself, on stderr, before it starts
@@ -576,8 +576,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.6.1
-- **Date**: September 21, 2026
+- **Version**: 1.6.2
+- **Date**: October 10, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

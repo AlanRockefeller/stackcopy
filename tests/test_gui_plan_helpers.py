@@ -5,7 +5,7 @@ import os
 import sys
 import types
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -327,11 +327,125 @@ class PlanScanActivityTests(unittest.TestCase):
         window.source_scan_var = mock.Mock()
         window.start_btn = mock.Mock()
 
+        window.source_scan_progress.cget.return_value = "indeterminate"
+
         gui.StackcopyGUI._set_plan_scanning(window, True)
         gui.StackcopyGUI._set_plan_scanning(window, True)
         gui.StackcopyGUI._set_plan_scanning(window, True)
 
         window.source_scan_progress.start.assert_called_once_with()
+
+    def test_a_rescan_returns_a_filling_bar_to_activity_mode(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._plan_scanning = True
+        window._running = False
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_progress.cget.return_value = "determinate"
+        window.source_scan_var = mock.Mock()
+        window.start_btn = mock.Mock()
+
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+
+        window.source_scan_progress.configure.assert_called_once_with(
+            mode="indeterminate"
+        )
+        window.source_scan_progress.start.assert_called_once_with()
+
+    def test_metadata_progress_fills_the_scan_bar_and_names_the_counts(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._scan_found = None
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_progress.cget.return_value = "indeterminate"
+        window.source_scan_var = mock.Mock()
+
+        gui.StackcopyGUI._show_plan_progress(
+            window, {"phase": "scanned", "files": "3460", "other": "3"}
+        )
+        gui.StackcopyGUI._show_plan_progress(
+            window, {"phase": "metadata", "done": "450", "total": "1800"}
+        )
+
+        window.source_scan_var.set.assert_called_with(
+            "Found 3,460 photos and videos - checking 1,800 JPEGs for camera "
+            "stacks (450 of 1,800)…"
+        )
+        window.source_scan_progress.stop.assert_called_once_with()
+        window.source_scan_progress.configure.assert_called_once_with(
+            mode="determinate"
+        )
+        window.source_scan_progress.set.assert_called_once_with(0.25)
+
+
+class ScanProgressTextTests(unittest.TestCase):
+    def test_found_files_are_reported_as_soon_as_the_walk_finishes(self):
+        self.assertEqual(
+            gui.scan_progress_text({"phase": "scanned", "files": "12"}, 12),
+            "Found 12 photos and videos",
+        )
+        self.assertEqual(
+            gui.scan_progress_text({"phase": "scanned", "files": "1"}, 1),
+            "Found 1 photo or video",
+        )
+
+    def test_metadata_progress_without_a_walk_count_still_reads_naturally(self):
+        self.assertEqual(
+            gui.scan_progress_text(
+                {"phase": "metadata", "done": "1", "total": "1"}, None
+            ),
+            "Checking 1 JPEG for camera stacks (1 of 1)…",
+        )
+
+    def test_other_phases_and_empty_metadata_are_not_described(self):
+        self.assertIsNone(gui.scan_progress_text({"phase": "copy"}, 5))
+        self.assertIsNone(
+            gui.scan_progress_text({"phase": "metadata", "total": "0"}, 5)
+        )
+
+    def test_metadata_cache_uses_local_appdata_on_windows(self):
+        # Only the Windows branch is under test; a real WindowsPath cannot be
+        # built on other systems, so the pure flavour stands in for it.
+        with (
+            mock.patch.object(gui.os, "name", "nt"),
+            mock.patch.object(gui, "Path", PureWindowsPath),
+            mock.patch.dict(
+                gui.os.environ, {"LOCALAPPDATA": r"C:\Users\me\AppData\Local"}
+            ),
+        ):
+            self.assertEqual(
+                gui.metadata_cache_path(),
+                r"C:\Users\me\AppData\Local\Stackcopy\stack-metadata-cache.json",
+            )
+
+    def test_metadata_cache_uses_library_caches_on_macos(self):
+        with (
+            mock.patch.object(gui.os, "name", "posix"),
+            mock.patch.object(gui.sys, "platform", "darwin"),
+        ):
+            self.assertEqual(
+                gui.metadata_cache_path(),
+                str(
+                    Path.home()
+                    / "Library"
+                    / "Caches"
+                    / gui.APP_NAME
+                    / gui.METADATA_CACHE_FILENAME
+                ),
+            )
+
+    def test_metadata_cache_lives_in_the_user_cache_directory(self):
+        with (
+            mock.patch.object(gui.os, "name", "posix"),
+            mock.patch.object(gui.sys, "platform", "linux"),
+            mock.patch.dict(gui.os.environ, {"XDG_CACHE_HOME": "/xdg-cache"}),
+        ):
+            self.assertEqual(
+                gui.metadata_cache_path(),
+                os.path.join(
+                    "/xdg-cache", gui.APP_NAME, gui.METADATA_CACHE_FILENAME
+                ),
+            )
 
 
 class ResultCardNoticeTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for the Stackcopy GUI.
 #
-# Build (must run ON the target OS — PyInstaller cannot cross-compile):
+# Build on the target OS, since PyInstaller cannot cross-compile:
 #   pip install -r requirements-gui.txt -r requirements-build.txt
 #   pyinstaller packaging/stackcopy_gui.spec
 #

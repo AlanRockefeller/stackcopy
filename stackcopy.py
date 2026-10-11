@@ -29,7 +29,7 @@ from datetime import datetime, date, timedelta
 from enum import Enum
 from typing import Any
 
-STACKCOPY_VERSION = "1.6.1"
+STACKCOPY_VERSION = "1.6.2"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -730,7 +730,7 @@ def iter_source_file_entries(src_dir: str, recursive: bool = False, exclude_dirs
 def get_stem_mtime(record, verbose=False):
     """
     Get the mtime for a stem record, preferring RAW over JPG.
-    Utilizes get_file_mtime to ensure caching and logging.
+    Uses get_file_mtime, which caches the value and handles logging.
     """
     raw_files = record["files"].get("raw")
     if raw_files:
@@ -2336,7 +2336,7 @@ def format_action_message(
 # StackedImage tag is unreadable below this.
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION = (12, 41)
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT = "12.41"
-# The version Stackcopy 1.6.1 is tested against and ships with its packaged
+# The version Stackcopy 1.6.2 is tested against and ships with its packaged
 # GUI builds.  Newer is fine; this is a known-good floor for "recommended",
 # never a requirement, and Stackcopy never checks the internet for it.
 EXIFTOOL_RECOMMENDED_VERSION_TEXT = "13.59"
@@ -2804,8 +2804,97 @@ def parse_stacked_image_value(value: Any) -> StackMetadata:
     return StackMetadata(StackMetadataState.UNKNOWN, None, raw_value)
 
 
+# ExifTool spends ~15 ms of Perl CPU time per JPEG, so a full card is CPU
+# bound in a single process.  Batches therefore run in parallel, sized so each
+# worker gets several of them (smoother progress, better load balancing) while
+# still amortizing ExifTool's start-up cost.
+EXIFTOOL_BATCH_MAX_FILES = 250
+EXIFTOOL_BATCH_MIN_FILES = 25
+EXIFTOOL_MAX_WORKERS = 8
+
+# When set, STACKCOPY_METADATA_CACHE names a JSON file that remembers the
+# StackedImage answer for each JPEG, keyed by path, size and mtime.  The GUI
+# sets it so the run started by "Move files" reuses what its preview scan
+# already read instead of asking ExifTool about every JPEG a second time.
+METADATA_CACHE_ENV = "STACKCOPY_METADATA_CACHE"
+METADATA_CACHE_VERSION = 1
+
+
+def _metadata_file_identity(path: str) -> list[int] | None:
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return None
+    return [stat_result.st_size, stat_result.st_mtime_ns]
+
+
+def _metadata_cache_exiftool_key(info: "ExifToolInfo") -> str:
+    # A different ExifTool may read tags the cached one could not (an upgrade
+    # past 12.41 learns OM SYSTEM MakerNotes), so its answers are not reused.
+    return f"{info.executable}|{info.version}|{info.library_version}"
+
+
+def _load_metadata_cache(cache_path: str, exiftool_key: str) -> dict[str, Any]:
+    try:
+        with open(cache_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != METADATA_CACHE_VERSION
+        or payload.get("exiftool") != exiftool_key
+        or not isinstance(payload.get("files"), dict)
+    ):
+        return {}
+    return payload["files"]
+
+
+def _save_metadata_cache(
+    cache_path: str, exiftool_key: str, entries: dict[str, Any]
+) -> None:
+    """Replace the cache atomically; a cache that cannot be written is skipped."""
+    payload = {
+        "version": METADATA_CACHE_VERSION,
+        "exiftool": exiftool_key,
+        "files": entries,
+    }
+    temp_path = f"{cache_path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        os.replace(temp_path, cache_path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+
+def _exiftool_batches(paths: list[str], workers: int) -> list[list[str]]:
+    per_batch = -(-len(paths) // (workers * 4)) if paths else 0
+    limit = max(EXIFTOOL_BATCH_MIN_FILES, min(EXIFTOOL_BATCH_MAX_FILES, per_batch))
+    # Stay comfortably below Windows' command-line limit while avoiding the
+    # pathological one-process-per-JPEG pattern.
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    batch_characters = 0
+    for path in paths:
+        path_characters = len(path) + 3
+        if batch and (len(batch) >= limit or batch_characters + path_characters > 24000):
+            batches.append(batch)
+            batch = []
+            batch_characters = 0
+        batch.append(path)
+        batch_characters += path_characters
+    if batch:
+        batches.append(batch)
+    return batches
+
+
 def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadata]:
-    """Read Olympus StackedImage MakerNotes in bounded ExifTool batches.
+    """Read Olympus StackedImage MakerNotes in parallel, bounded ExifTool batches.
 
     ExifTool is optional.  Missing executables, unsupported MakerNotes, absent
     tags, malformed output, and subprocess failures all produce UNKNOWN by
@@ -2824,24 +2913,42 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
     if not exiftool or not jpeg_paths:
         return results
 
-    normalized_to_path = {
-        os.path.normcase(os.path.abspath(path)): path for path in jpeg_paths
-    }
-    # Stay comfortably below Windows' command-line limit while avoiding the
-    # pathological one-process-per-JPEG pattern.
-    batches: list[list[str]] = []
-    batch: list[str] = []
-    batch_characters = 0
+    def cache_key(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    normalized_to_path = {cache_key(path): path for path in jpeg_paths}
+
+    # Answers that are still valid for an unchanged file need no ExifTool run.
+    # Only answers ExifTool actually gave are cached; files it failed on are
+    # asked again next time.
+    cache_path = (os.environ.get(METADATA_CACHE_ENV) or "").strip() or None
+    exiftool_key = _metadata_cache_exiftool_key(info)
+    cached = _load_metadata_cache(cache_path, exiftool_key) if cache_path else {}
+    identities: dict[str, list[int] | None] = {}
+    fresh_cache: dict[str, Any] = {}
+    to_read: list[str] = []
     for path in jpeg_paths:
-        path_characters = len(path) + 3
-        if batch and (len(batch) >= 250 or batch_characters + path_characters > 24000):
-            batches.append(batch)
-            batch = []
-            batch_characters = 0
-        batch.append(path)
-        batch_characters += path_characters
-    if batch:
-        batches.append(batch)
+        key = cache_key(path)
+        identity = _metadata_file_identity(path) if cache_path else None
+        identities[path] = identity
+        entry = cached.get(key)
+        if (
+            identity is not None
+            and isinstance(entry, dict)
+            and entry.get("identity") == identity
+        ):
+            fresh_cache[key] = entry
+            if "tag" in entry:
+                results[path] = parse_stacked_image_value(entry["tag"])
+        else:
+            to_read.append(path)
+
+    done = len(jpeg_paths) - len(to_read)
+    total = len(jpeg_paths)
+    _emit_progress(phase="metadata", done=done, total=total)
+
+    workers = max(1, min(EXIFTOOL_MAX_WORKERS, os.cpu_count() or 1))
+    batches = _exiftool_batches(to_read, workers)
 
     # Reasons this invocation could not read every file, reported once at the
     # end rather than per batch or per file.  Absence of the tag on a healthy
@@ -2855,30 +2962,24 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
             degraded_reasons.append(reason)
         degraded_files += file_count
 
-    for batch in batches:
-        try:
-            completed = subprocess.run(
-                [
-                    exiftool,
-                    "-json",
-                    "-n",
-                    "-Olympus:StackedImage",
-                    *batch,
-                ],
-                check=False,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            note_degraded("a batch timed out", len(batch))
-            continue
-        except (OSError, subprocess.SubprocessError):
-            note_degraded("ExifTool could not be run", len(batch))
-            continue
+    def run_batch(batch: list[str]):
+        return subprocess.run(
+            [
+                exiftool,
+                "-json",
+                "-n",
+                "-Olympus:StackedImage",
+                *batch,
+            ],
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
 
+    def absorb_batch(batch: list[str], completed) -> None:
         # A nonzero exit usually means *one* file in the batch failed, while
         # valid JSON was still emitted for the rest.  Discarding the whole
         # batch would drop hundreds of good results, so parse regardless and
@@ -2889,7 +2990,7 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
             payload = None
         if not isinstance(payload, list):
             note_degraded("ExifTool output could not be parsed", len(batch))
-            continue
+            return
         reported_paths: set[str] = set()
 
         for item in payload:
@@ -2898,9 +2999,7 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
             source_file = item.get("SourceFile")
             if not isinstance(source_file, str):
                 continue
-            original_path = normalized_to_path.get(
-                os.path.normcase(os.path.abspath(source_file))
-            )
+            original_path = normalized_to_path.get(cache_key(source_file))
             if original_path is None:
                 continue
             reported_paths.add(original_path)
@@ -2919,6 +3018,12 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
                     break
             if tag_found:
                 results[original_path] = parse_stacked_image_value(tag_value)
+            identity = identities.get(original_path)
+            if identity is not None:
+                entry: dict[str, Any] = {"identity": identity}
+                if tag_found:
+                    entry["tag"] = tag_value
+                fresh_cache[cache_key(original_path)] = entry
 
         if completed.returncode != 0:
             # Files ExifTool never reported on at all still lost their chance
@@ -2926,6 +3031,25 @@ def read_stacked_image_metadata(jpeg_paths: list[str]) -> dict[str, StackMetadat
             unreported = sum(1 for path in batch if path not in reported_paths)
             if unreported:
                 note_degraded("ExifTool reported an error for some files", unreported)
+
+    if batches:
+        with ThreadPoolExecutor(max_workers=min(workers, len(batches))) as pool:
+            futures = {pool.submit(run_batch, batch): batch for batch in batches}
+            for future in as_completed(futures):
+                batch = futures[future]
+                try:
+                    completed = future.result()
+                except subprocess.TimeoutExpired:
+                    note_degraded("a batch timed out", len(batch))
+                except (OSError, subprocess.SubprocessError):
+                    note_degraded("ExifTool could not be run", len(batch))
+                else:
+                    absorb_batch(batch, completed)
+                done += len(batch)
+                _emit_progress(phase="metadata", done=done, total=total)
+
+    if cache_path and to_read:
+        _save_metadata_cache(cache_path, exiftool_key, fresh_cache)
 
     if degraded_files:
         detail = "; ".join(degraded_reasons) if degraded_reasons else "some files"
@@ -3417,7 +3541,7 @@ def main():
     #   },
     #   ...
     # }
-    if operation_mode == "lightroomimport" and not args.plan_json:
+    if operation_mode == "lightroomimport":
         _emit_progress(phase="scan", done=0, total=0)
     scan_recursively = operation_mode == "lightroomimport"
     scan_exclude_dirs = ()
@@ -3545,6 +3669,13 @@ def main():
     except OSError as e:
         print(f"Error scanning source directory '{src_dir}': {e}")
         sys.exit(1)
+
+    if operation_mode == "lightroomimport":
+        _emit_progress(
+            phase="scanned",
+            files=sum(len(record["files"]) for record in file_db.values()),
+            other=len(other_source_files),
+        )
 
     # --- 1a. Stems that cannot be represented unambiguously ---
     # These are excluded from metadata reads, stack detection and planning, and

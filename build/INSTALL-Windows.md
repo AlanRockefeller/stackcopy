@@ -141,7 +141,7 @@ the newly extracted folder.
 Stackcopy shows a line near the top of the window telling you what ExifTool it
 is using. The Windows app ships with ExifTool 13.59 built in, so it should say:
 
-    ExifTool 13.59 (bundled) — OM-1 stack metadata enabled
+    ExifTool 13.59 (bundled) - OM System stack metadata enabled
 
 If it instead warns that ExifTool is missing or too old, restore the bundled
 ExifTool payload by extracting `stackcopy-windows.zip` again into a new folder.

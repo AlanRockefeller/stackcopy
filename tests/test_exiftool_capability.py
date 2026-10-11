@@ -874,7 +874,7 @@ class GuiStatusHelperTests(unittest.TestCase):
 
 class VersionVisibilityTests(unittest.TestCase):
     def test_the_version_is_still_1_6_1(self):
-        self.assertEqual(stackcopy.STACKCOPY_VERSION, "1.6.1")
+        self.assertEqual(stackcopy.STACKCOPY_VERSION, "1.6.2")
 
     def test_the_gui_does_not_hard_code_its_own_copy(self):
         self.assertEqual(gui.STACKCOPY_VERSION, stackcopy.STACKCOPY_VERSION)
@@ -936,26 +936,26 @@ class VersionVisibilityTests(unittest.TestCase):
         completed = self.run_cli(["--version"])
 
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(completed.stdout.strip(), "Stackcopy 1.6.1")
+        self.assertEqual(completed.stdout.strip(), "Stackcopy 1.6.2")
 
     def test_help_shows_the_version(self):
         completed = self.run_cli(["--help"])
 
         self.assertEqual(completed.returncode, 0)
-        self.assertIn("Stackcopy 1.6.1", completed.stdout)
+        self.assertIn("Stackcopy 1.6.2", completed.stdout)
 
     def test_no_operation_shows_the_version_with_the_help(self):
         completed = self.run_cli([])
 
         self.assertEqual(completed.returncode, 1)
-        self.assertIn("Stackcopy 1.6.1", completed.stdout + completed.stderr)
+        self.assertIn("Stackcopy 1.6.2", completed.stdout + completed.stderr)
 
     def test_startup_identifies_itself_on_stderr(self):
         completed = self.run_cli(["--dry-run", "--rename", str(ROOT)])
 
-        self.assertIn("Stackcopy 1.6.1", completed.stderr)
+        self.assertIn("Stackcopy 1.6.2", completed.stderr)
         # stdout stays clean for pipes.
-        self.assertNotIn("Stackcopy 1.6.1", completed.stdout)
+        self.assertNotIn("Stackcopy 1.6.2", completed.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -1004,8 +1004,8 @@ class PlanJsonPurityTests(unittest.TestCase):
     def test_the_version_banner_never_reaches_stdout(self):
         completed = self.plan()
 
-        self.assertNotIn("Stackcopy 1.6.1", completed.stdout)
-        self.assertIn("Stackcopy 1.6.1", completed.stderr)
+        self.assertNotIn("Stackcopy 1.6.2", completed.stdout)
+        self.assertIn("Stackcopy 1.6.2", completed.stderr)
 
     def test_exiftool_warnings_never_reach_stdout(self):
         completed = self.plan(environment={"STACKCOPY_EXIFTOOL": "/nowhere/exiftool"})
@@ -1019,7 +1019,7 @@ class PlanJsonPurityTests(unittest.TestCase):
         completed = self.plan()
         payload = json.loads(completed.stdout)
 
-        self.assertEqual(payload["stackcopy_version"], "1.6.1")
+        self.assertEqual(payload["stackcopy_version"], "1.6.2")
         self.assertIn(
             payload["exiftool_status"],
             {"om_system_supported", "too_old", "missing", "unusable"},

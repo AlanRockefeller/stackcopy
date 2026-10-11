@@ -163,7 +163,9 @@ class PlanJsonTests(unittest.TestCase):
             )
             self.assertEqual(payload["dest_dates"], ["2026-08-24"])
 
-    def test_plan_json_suppresses_scan_progress_sentinel(self):
+    def test_plan_json_reports_scan_progress_on_stderr_only(self):
+        # The GUI shows what a plan scan is finding while it runs, so scan
+        # progress goes to stderr; stdout must still be exactly one JSON object.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "card"
@@ -183,7 +185,15 @@ class PlanJsonTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIsNotNone(json.loads(output))
-            self.assertNotIn(stackcopy._PROGRESS_SENTINEL, stderr.getvalue())
+            self.assertNotIn(stackcopy._PROGRESS_SENTINEL, output)
+            progress = [
+                line
+                for line in stderr.getvalue().splitlines()
+                if line.startswith(stackcopy._PROGRESS_SENTINEL)
+            ]
+            self.assertIn("phase=scan ", progress[0] + " ")
+            self.assertIn("@@SCPROGRESS phase=scanned files=1 other=0", progress)
+            self.assertFalse(any("phase=prepare" in line for line in progress))
 
     def test_leave_on_card_plan_does_not_claim_source_will_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
