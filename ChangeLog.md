@@ -1,5 +1,16 @@
 # Change Log
 
+## Unreleased
+
+- The GUI's import button remains available while the initial card scan is
+  running. Starting then safely hands the work to the import's own scan instead
+  of leaving an unexplained disabled button. The action area now also says that
+  destination space is checked before any file moves.
+- After cancelling an import or declining a low-space warning, the GUI now
+  offers a clear retry/continue action. It also keeps the Lightroom-folder
+  button available after a cancelled or space-blocked import so completed files
+  and the destination can be inspected.
+
 ## **1.6.2 - 2026-10-10**
 
 - **Card scans are much faster.** Stackcopy uses ExifTool to read the stack information in each JPEG, and it used to do that one batch at a time on a single CPU core. It now runs several ExifTool processes at once. On an 8-core laptop, a card with about 2,000 JPEGs now scans in under 10 seconds instead of about 30.
