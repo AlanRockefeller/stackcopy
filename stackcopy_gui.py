@@ -1344,9 +1344,19 @@ class StackcopyGUI(ctk.CTk):
             self.actions, "Advanced ▾", self._toggle_advanced
         )
         self.advanced_btn.grid(row=0, column=3, sticky="e")
+        ctk.CTkLabel(
+            self.actions,
+            text=(
+                "You can start while the card scan is running. Destination space "
+                "is checked before any file moves."
+            ),
+            anchor="w",
+            justify="left",
+            text_color=("gray40", "gray66"),
+        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         self.advanced_frame = ctk.CTkFrame(self.actions, fg_color="transparent")
         self.advanced_frame.grid(
-            row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0)
+            row=2, column=0, columnspan=4, sticky="ew", pady=(10, 0)
         )
         self.verbose_check = ctk.CTkCheckBox(
             self.advanced_frame,
@@ -1472,13 +1482,14 @@ class StackcopyGUI(ctk.CTk):
             self.result_controls, text="Open Lightroom folder", command=self._open_dest
         )
         self.open_btn.grid(row=0, column=0)
-        ctk.CTkButton(
+        self.result_action_btn = ctk.CTkButton(
             self.result_controls,
             text="Import another card",
             fg_color="transparent",
             border_width=1,
             command=self._import_another,
-        ).grid(row=0, column=1, padx=(10, 0))
+        )
+        self.result_action_btn.grid(row=0, column=1, padx=(10, 0))
         self.result_controls.grid_remove()
         self.card_followup_note = ctk.CTkFrame(self.activity, border_width=1)
         self.card_followup_note.grid(
@@ -1889,9 +1900,10 @@ class StackcopyGUI(ctk.CTk):
         else:
             self.source_scan_progress.stop()
             self.source_scan_progress.grid_remove()
-        self.start_btn.configure(
-            state="disabled" if scanning or self._running else "normal"
-        )
+        # The import has its own scan and safety checks, and _launch cancels
+        # this preview scan.  Keeping the action available avoids making a
+        # long metadata scan look like an unexplained application failure.
+        self.start_btn.configure(state="disabled" if self._running else "normal")
 
     def _show_slow_plan_scan(self, generation: int) -> None:
         self._plan_slow_after = None
@@ -2427,12 +2439,19 @@ class StackcopyGUI(ctk.CTk):
         self.progress.stop()
         self._set_running(False)
         if terminated:
+            assert self._pending is not None
+            was_preview = self._pending[3]
             self._show_result(
-                "Cancelled",
-                "Completed files are safe. Re-run the import to pick up "
-                "everything left on the card.",
+                "Preview cancelled" if was_preview else "Import cancelled",
+                (
+                    "Nothing was moved. You can retry the preview."
+                    if was_preview
+                    else "Completed files are safe. After making room, continue "
+                    "the import to pick up everything left on the card."
+                ),
                 problems=0,
-                allow_open=False,
+                allow_open=not was_preview,
+                retry_label="Retry preview" if was_preview else "Continue import",
             )
             return
         if (
@@ -2449,9 +2468,10 @@ class StackcopyGUI(ctk.CTk):
                 self._show_result(
                     "Import stopped - low disk space",
                     "No new file was started after the space check. Free some "
-                    "space and try again.",
+                    "space, then try the import again.",
                     problems=0,
-                    allow_open=False,
+                    allow_open=True,
+                    retry_label="Try import again",
                 )
             return
 
@@ -2529,11 +2549,18 @@ class StackcopyGUI(ctk.CTk):
         problems: int,
         allow_open: bool,
         success: bool = False,
+        retry_label: str | None = None,
     ) -> None:
         self.activity.grid()
         self.running_controls.grid_remove()
         self.result_controls.grid()
         self.open_btn.configure(state="normal" if allow_open else "disabled")
+        self.result_action_btn.configure(
+            text=retry_label or "Import another card",
+            command=(
+                self._retry_current_operation if retry_label else self._import_another
+            ),
+        )
         self.phase_var.set(heading)
         self.meta_var.set(details if success else "")
         self.result_body_var.set("" if success else details)
@@ -2651,6 +2678,11 @@ class StackcopyGUI(ctk.CTk):
         self._plan_generation += 1
         self._refresh_idle_plan()
         self._schedule_plan_scan()
+
+    def _retry_current_operation(self) -> None:
+        """Repeat a cancelled/refused run against the files still on the card."""
+        preview = bool(self._pending and self._pending[3])
+        self._start(preview)
 
     # -- update notifications --------------------------------------------
     #

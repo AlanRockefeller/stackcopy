@@ -314,10 +314,25 @@ class PlanScanActivityTests(unittest.TestCase):
         gui.StackcopyGUI._set_plan_scanning(window, True)
         window.source_scan_progress.grid.assert_called_once_with()
         window.source_scan_progress.start.assert_called_once_with()
+        window.start_btn.configure.assert_called_with(state="normal")
 
         gui.StackcopyGUI._set_plan_scanning(window, False)
         window.source_scan_progress.stop.assert_called_once_with()
         window.source_scan_progress.grid_remove.assert_called_once_with()
+
+    def test_import_stays_disabled_during_scan_when_an_import_is_running(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._plan_slow_after = None
+        window._plan_scanning = False
+        window._running = True
+        window.source_scan_progress = mock.Mock()
+        window.source_scan_progress.cget.return_value = "indeterminate"
+        window.source_scan_var = mock.Mock()
+        window.start_btn = mock.Mock()
+
+        gui.StackcopyGUI._set_plan_scanning(window, True)
+
+        window.start_btn.configure.assert_called_once_with(state="disabled")
 
     def test_repeated_scanning_calls_do_not_restart_activity_bar(self):
         window = mock.Mock(spec=gui.StackcopyGUI)
@@ -477,6 +492,7 @@ class ResultCardNoticeTests(unittest.TestCase):
             "running_controls",
             "result_controls",
             "open_btn",
+            "result_action_btn",
             "phase_var",
             "meta_var",
             "result_body_var",
@@ -531,6 +547,39 @@ class ResultCardNoticeTests(unittest.TestCase):
         window.card_followup_note.grid.assert_not_called()
         window.card_followup_note.grid_remove.assert_called_once_with()
 
+    def test_retry_result_offers_the_same_operation_again(self):
+        window = self.result_window(plan_payload())
+
+        gui.StackcopyGUI._show_result(
+            window,
+            "Import cancelled",
+            "Completed files are safe.",
+            problems=0,
+            allow_open=True,
+            retry_label="Continue import",
+        )
+
+        window.open_btn.configure.assert_called_once_with(state="normal")
+        window.result_action_btn.configure.assert_called_once_with(
+            text="Continue import", command=window._retry_current_operation
+        )
+
+    def test_ordinary_result_restores_the_import_another_card_action(self):
+        window = self.result_window(plan_payload())
+
+        gui.StackcopyGUI._show_result(
+            window,
+            "1 file imported",
+            "done",
+            problems=0,
+            allow_open=True,
+            success=True,
+        )
+
+        window.result_action_btn.configure.assert_called_once_with(
+            text="Import another card", command=window._import_another
+        )
+
     def test_completion_scrolls_to_the_visible_result_area(self):
         window = mock.Mock(spec=gui.StackcopyGUI)
         window.body = mock.Mock()
@@ -554,6 +603,62 @@ class ResultCardNoticeTests(unittest.TestCase):
 
         window.card_followup_note.grid.assert_not_called()
         window.card_followup_note.grid_remove.assert_called_once_with()
+
+
+class InterruptedResultTests(unittest.TestCase):
+    @staticmethod
+    def window(*, preview: bool = False):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._terminated_by_user = True
+        window._proc = mock.Mock()
+        window._pending = ([], "/photos", "/stacks", preview)
+        window.progress = mock.Mock()
+        return window
+
+    def test_cancelled_import_can_continue_and_open_its_destination(self):
+        window = self.window()
+
+        gui.StackcopyGUI._handle_done(window, 143)
+
+        window._show_result.assert_called_once_with(
+            "Import cancelled",
+            "Completed files are safe. After making room, continue the import "
+            "to pick up everything left on the card.",
+            problems=0,
+            allow_open=True,
+            retry_label="Continue import",
+        )
+
+    def test_cancelled_preview_only_offers_to_retry_the_preview(self):
+        window = self.window(preview=True)
+
+        gui.StackcopyGUI._handle_done(window, 143)
+
+        window._show_result.assert_called_once_with(
+            "Preview cancelled",
+            "Nothing was moved. You can retry the preview.",
+            problems=0,
+            allow_open=False,
+            retry_label="Retry preview",
+        )
+
+    def test_declined_low_space_warning_can_be_retried(self):
+        window = self.window()
+        window._terminated_by_user = False
+        window._low_space_report = {"destination": "/photos"}
+        window._assume_yes = False
+
+        with mock.patch.object(gui.messagebox, "askyesno", return_value=False):
+            gui.StackcopyGUI._handle_done(window, 1)
+
+        window._show_result.assert_called_once_with(
+            "Import stopped - low disk space",
+            "No new file was started after the space check. Free some space, "
+            "then try the import again.",
+            problems=0,
+            allow_open=True,
+            retry_label="Try import again",
+        )
 
 
 class ConditionalScrollbarTests(unittest.TestCase):
@@ -738,6 +843,27 @@ class ImportAnotherTests(unittest.TestCase):
         self.assertEqual(window._plan_generation, 5)
         window._refresh_idle_plan.assert_called_once_with()
         window._schedule_plan_scan.assert_called_once_with()
+
+    def test_retry_repeats_the_pending_import_mode(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._pending = (["--lightroomimport", "/card"], "/photos", "/stacks", False)
+
+        gui.StackcopyGUI._retry_current_operation(window)
+
+        window._start.assert_called_once_with(False)
+
+    def test_retry_repeats_a_preview_without_moving_files(self):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._pending = (
+            ["--lightroomimport", "/card", "--dry"],
+            "/photos",
+            "/stacks",
+            True,
+        )
+
+        gui.StackcopyGUI._retry_current_operation(window)
+
+        window._start.assert_called_once_with(True)
 
 
 class TerminalSummaryTests(unittest.TestCase):
