@@ -172,6 +172,63 @@ class ResumedHeuristicStackTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertIn("Accepted stacks:               0", output)
 
+    def test_maximum_size_stack_resumes_to_the_uninterrupted_layout(self):
+        # At MAX_STACK_INPUT_FRAMES the resumed stack also has to pass burst
+        # safety; with no preceding frames it must be accepted, as it was on
+        # the uninterrupted run.
+        self.assertEqual(stackcopy.MAX_STACK_INPUT_FRAMES, 15)
+        self.assert_resume_matches_baseline(frames=15)
+
+    def test_resumed_full_size_stack_still_honours_burst_safety(self):
+        # Frames 4..18 form a 15-frame stack, and frames 1..3 directly before
+        # it are within MAX_BURST_GAP_SECONDS of its first frame: a burst, not
+        # a stack.  The preceding frames were imported first (they are older),
+        # so they are in the Lightroom tree, not on the card.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card" / "DCIM" / "100OMSYS"
+            stack_dated = root / "StackInput" / "2026" / "2026-08-24"
+            lightroom_dated = root / "Lightroom" / "2026" / "2026-08-24"
+            when = {n: BASE + timedelta(seconds=n * 0.5) for n in range(1, 19)}
+            for number in (1, 2, 3):
+                make_pair(lightroom_dated, f"P808{number:04d}", when[number])
+            for number in range(4, 17):
+                make_pair(stack_dated, f"P808{number:04d}", when[number])
+            for number in (17, 18):
+                make_pair(card, f"P808{number:04d}", when[number])
+            write_file(card / "P8080019.JPG", b"out", when[18] + timedelta(seconds=3))
+
+            code, output = self.run_import(root)
+
+            self.assertEqual(code, 0, output)
+            self.assertIn("Accepted stacks:               0", output)
+            self.assertNotIn("continues a stack", output)
+
+    def test_an_excluded_card_frame_is_a_boundary_not_a_gap(self):
+        # Frame 1 is on the card but has both an ORF and a DNG, so stack
+        # detection deliberately leaves it out.  A matching RAW in the
+        # stack-input folder must not stand in for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card" / "DCIM" / "100OMSYS"
+            make_pair(card, "P8080001", BASE + timedelta(seconds=1), ("ORF", "DNG"))
+            for number in (2, 3):
+                make_pair(card, f"P808{number:04d}", BASE + timedelta(seconds=number))
+            write_file(card / "P8080004.JPG", b"out", BASE + timedelta(seconds=8))
+            make_pair(
+                root / "StackInput" / "2026" / "2026-08-24",
+                "P8080001",
+                BASE + timedelta(seconds=1),
+            )
+
+            _code, output = self.run_import(root)
+
+            self.assertIn("Accepted stacks:               0", output)
+            self.assertNotIn("continues a stack", output)
+            card_files = layout(root)["card"]
+            self.assertIn("DCIM/100OMSYS/P8080001.ORF", card_files)
+            self.assertIn("DCIM/100OMSYS/P8080001.DNG", card_files)
+
     def test_copy_mode_resume_is_unchanged(self):
         # Leave-on-card never removes frames, so the whole stack is always
         # visible on the card and a second run finds everything identical.
