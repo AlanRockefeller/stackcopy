@@ -145,6 +145,14 @@ class ResumedHeuristicStackTests(unittest.TestCase):
             frames=4, raw_lead=0.1, single_shot=False
         )
 
+    def test_resumed_frame_keeps_its_moved_raws_date_folder(self):
+        # Frame 1's RAW is stamped 23:59:59.9 and its JPG 00:00:00.  RAW wins
+        # the stem's date, so an uninterrupted import files both under the
+        # 24th; after only the RAW moved, the JPG must follow it there.
+        self.assert_resume_matches_baseline(
+            frames=3, start=datetime(2026, 8, 24, 23, 59, 59), raw_lead=0.1
+        )
+
     def test_genuinely_jpg_only_card_still_disables_stack_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

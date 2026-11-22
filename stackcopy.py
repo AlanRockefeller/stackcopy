@@ -4274,7 +4274,7 @@ def main():
         otherwise from the stack-input folder.  At the frame cap it repeats
         the burst-safety probe, looking for the preceding frames on the card
         or wherever the earlier run would have put them.  Returns
-        ``(card_inputs, destination_backed)`` only when at least one frame's
+        ``(card_inputs, destination_backed, moved_raw_dates)`` only when at least one frame's
         RAW came from an earlier import and the combined stack passes the usual
         checks; otherwise None, leaving the card-only decision unchanged.
         """
@@ -4289,6 +4289,9 @@ def main():
             return f"{prefix}{number:0{width}d}"
 
         card_inputs: list[str] = []
+        # Card frames whose RAW already moved: the RAW's date, which an
+        # uninterrupted import would have filed the whole frame under.
+        moved_raw_dates: dict[str, date] = {}
         imported_count = 0
         # Frames whose RAW is in the stack-input folder, whether the whole
         # frame moved or only its RAW did: the evidence of an earlier run.
@@ -4320,6 +4323,7 @@ def main():
                     )
                     if frame_mtime is not None:
                         destination_backed += 1
+                        moved_raw_dates[card_stem] = frame_mtime.date()
                 if frame_mtime is None or (
                     abs((prev_mtime - frame_mtime).total_seconds()) > allowed_gap
                 ):
@@ -4390,7 +4394,7 @@ def main():
                     )
                 return None
 
-        return card_inputs, destination_backed
+        return card_inputs, destination_backed, moved_raw_dates
 
     def resumable_stack_output(output_data) -> bool:
         """True when an earlier import's stack-input files continue this JPG."""
@@ -4566,6 +4570,7 @@ def main():
             metadata = stack_metadata_for_record(output_data)
             metadata_confirmed = metadata.state == StackMetadataState.FOCUS_STACK
             numeric_info = output_data.get("numeric")
+            moved_raw_dates = {}
             sequence = []
             sequence_dirs = []
             potential_inputs = []
@@ -4686,7 +4691,7 @@ def main():
                 else:
                     too_many_in_burst = inputs_not_all_raw_backed = False
                 if resumed is not None:
-                    potential_inputs, imported_frames = resumed
+                    potential_inputs, imported_frames, moved_raw_dates = resumed
                     too_many_in_burst = inputs_not_all_raw_backed = False
                     print(
                         f"Note: '{output_filename}' continues a stack from an "
@@ -4879,7 +4884,12 @@ def main():
                 if not date_record:
                     continue
 
-                input_file_date = get_file_date(date_record, args.verbose)
+                # A frame whose RAW an interrupted earlier import already
+                # moved joins that RAW's dated folder, as it would have on
+                # an uninterrupted run (RAW wins the stem's date).
+                input_file_date = moved_raw_dates.get(input_stem) or get_file_date(
+                    date_record, args.verbose
+                )
                 if not input_file_date:
                     skipped_missing_date += 1
                     if args.verbose:
