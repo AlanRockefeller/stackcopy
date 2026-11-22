@@ -29,7 +29,7 @@ from datetime import datetime, date, timedelta
 from enum import Enum
 from typing import Any
 
-STACKCOPY_VERSION = "1.6.2"
+STACKCOPY_VERSION = "1.6.3"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -2336,7 +2336,7 @@ def format_action_message(
 # StackedImage tag is unreadable below this.
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION = (12, 41)
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT = "12.41"
-# The version Stackcopy 1.6.2 is tested against and ships with its packaged
+# The version Stackcopy 1.6.3 is tested against and ships with its packaged
 # GUI builds.  Newer is fine; this is a known-good floor for "recommended",
 # never a requirement, and Stackcopy never checks the internet for it.
 EXIFTOOL_RECOMMENDED_VERSION_TEXT = "13.59"
@@ -3972,6 +3972,15 @@ def main():
                 continue
             group = stack_detection_group_key(data)
             if group in jpg_only_stack_groups:
+                # An interrupted import that already moved every RAW frame
+                # leaves a folder that only *looks* JPG-only.  A strict match
+                # in the stack-input folder proves those RAWs existed; a
+                # genuinely JPG-only card has no such evidence.
+                if operation_mode == "lightroomimport" and (
+                    resumable_stack_output(data)
+                ):
+                    stacked_outputs.add(stem)
+                    continue
                 if group not in metadata_positive_stack_groups:
                     warn_jpg_only_stack_group(group)
                 continue
@@ -3979,8 +3988,23 @@ def main():
             stacked_outputs.add(stem)
         return stacked_outputs
 
+    def report_inputs_not_all_raw_backed(output_data, potential_inputs):
+        nonlocal inputs_not_all_raw_backed_skipped
+        inputs_not_all_raw_backed_skipped += 1
+        warn_inputs_not_all_raw_backed(output_data, potential_inputs)
+        if args.debug_stacks:
+            print(
+                "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
+            )
+
     def scan_stack_inputs(
-        sequence, idx, output_num, output_mtime, output_data, claimed_input_stems
+        sequence,
+        idx,
+        output_num,
+        output_mtime,
+        output_data,
+        claimed_input_stems,
+        report_raw_backing=True,
     ):
         """Backward-scan from a stacked-output candidate to collect its inputs.
 
@@ -3991,8 +4015,9 @@ def main():
 
         ``output_mtime`` must be non-None. Returns
         ``(potential_inputs, too_many_in_burst, inputs_not_all_raw_backed)``.
+        With ``report_raw_backing`` false the caller reports a RAW-backing
+        rejection itself (see report_inputs_not_all_raw_backed).
         """
-        nonlocal inputs_not_all_raw_backed_skipped
 
         potential_inputs = []
         expected_num = output_num - 1
@@ -4126,15 +4151,270 @@ def main():
         inputs_not_all_raw_backed = bool(potential_inputs) and not (
             input_frames_are_raw_backed
         )
-        if inputs_not_all_raw_backed:
-            inputs_not_all_raw_backed_skipped += 1
-            warn_inputs_not_all_raw_backed(output_data, potential_inputs)
-            if args.debug_stacks:
-                print(
-                    "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
-                )
+        if inputs_not_all_raw_backed and report_raw_backing:
+            report_inputs_not_all_raw_backed(output_data, potential_inputs)
 
         return potential_inputs, too_many_in_burst, inputs_not_all_raw_backed
+
+    # --- Resuming an interrupted --lightroomimport (see
+    # scan_resumed_stack_inputs).  Everything here only *reads* the
+    # destination trees; anything missing, unreadable or ambiguous is simply
+    # not evidence, which leaves the ordinary card-only decision in place.
+    dated_folder_listing_cache: dict[str, dict[str, list[str]]] = {}
+    source_numbers_cache: dict[tuple[str, str], set[int]] = {}
+
+    def dated_folder_listing(folder: str) -> dict[str, list[str]]:
+        """Map stem -> paths of the photo files in one dated destination folder."""
+        cached = dated_folder_listing_cache.get(folder)
+        if cached is not None:
+            return cached
+        listing: dict[str, list[str]] = defaultdict(list)
+        photo_extensions = RAW_EXTENSIONS | ORI_EXTENSIONS | JPG_EXTENSIONS
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    stem, ext = os.path.splitext(entry.name)
+                    if ext.lower() in photo_extensions and entry.is_file(
+                        follow_symlinks=False
+                    ):
+                        listing[stem].append(entry.path)
+        except OSError:
+            listing = defaultdict(list)
+        dated_folder_listing_cache[folder] = listing
+        return listing
+
+    def imported_frame_mtime(roots, stem: str, newer_mtime, allowed_gap, *, raw_only):
+        """mtime of a frame an earlier import already moved, or None.
+
+        Looks only at an exact stem in the dated folder for the frame's own
+        date under each of ``roots``.  The frame's mtime is taken like
+        get_stem_mtime (RAW, then ORI, then JPG); with ``raw_only`` a frame
+        without an ordinary RAW file is not evidence.  Moves and copies keep
+        mtime, so a moved frame keeps its capture timing.  Returns None when
+        nothing is found, when two different places hold the stem, or when
+        the frame is more than ``allowed_gap`` seconds from ``newer_mtime``.
+        """
+        days = sorted(
+            {
+                newer_mtime.date(),
+                (newer_mtime - timedelta(seconds=allowed_gap)).date(),
+            }
+        )
+        found = None
+        for root in dict.fromkeys(roots):
+            for day in days:
+                folder = os.path.join(root, str(day.year), day.strftime("%Y-%m-%d"))
+                paths = dated_folder_listing(folder).get(stem)
+                if not paths:
+                    continue
+                by_kind = {}
+                for path in paths:
+                    ext = os.path.splitext(path)[1].lower()
+                    kind = (
+                        "raw"
+                        if ext in RAW_EXTENSIONS
+                        else "ori" if ext in ORI_EXTENSIONS else "jpg"
+                    )
+                    by_kind.setdefault(kind, path)
+                chosen = next(
+                    (by_kind[k] for k in ("raw", "ori", "jpg") if k in by_kind), None
+                )
+                if raw_only and "raw" not in by_kind:
+                    continue
+                try:
+                    mtime = datetime.fromtimestamp(os.stat(chosen).st_mtime)
+                except (OSError, ValueError, OverflowError, TypeError):
+                    return None
+                if mtime.date() != day:
+                    continue  # not where an import would have put this frame
+                if found is not None:
+                    return None  # the stem is in two places: ambiguous
+                found = mtime
+        if found is None:
+            return None
+        if abs((newer_mtime - found).total_seconds()) > allowed_gap:
+            return None
+        return found
+
+    def card_has_excluded_frame(sequence_dirs, prefix, number, card_by_num) -> bool:
+        """True when the card holds this frame number but stack detection
+        deliberately left it out of the sequence (for example a stem with
+        both an ORF and a DNG).  That is a boundary, not a missing frame."""
+        if number in card_by_num:
+            return False
+        for relative_dir in sequence_dirs:
+            key = (relative_dir, prefix)
+            numbers = source_numbers_cache.get(key)
+            if numbers is None:
+                numbers = {
+                    record["numeric"]["num"]
+                    for record in file_db.values()
+                    if record.get("numeric")
+                    and record["numeric"]["prefix"] == prefix
+                    and record.get("relative_dir", ".") == relative_dir
+                }
+                source_numbers_cache[key] = numbers
+            if number in numbers:
+                return True
+        return False
+
+    def scan_resumed_stack_inputs(
+        numeric_info, output_mtime, sequence, sequence_dirs, claimed_stems
+    ):
+        """Re-assemble a heuristic stack that an interrupted import split.
+
+        Imports move files oldest first, so a card that dropped out partway
+        through a stack leaves its *earliest* frames already in the
+        stack-input folder and the rest on the card.  Seen from the card alone
+        the stack can then look too short, and filing the remainder as
+        ordinary photos would split it across destinations.
+
+        Walks backward from the output exactly as ``scan_stack_inputs`` does,
+        taking each consecutive frame from the card when it is there and
+        otherwise from the stack-input folder.  At the frame cap it repeats
+        the burst-safety probe, looking for the preceding frames on the card
+        or wherever the earlier run would have put them.  Returns
+        ``(card_inputs, destination_backed, moved_raw_dates)`` only when at least one frame's
+        RAW came from an earlier import and the combined stack passes the usual
+        checks; otherwise None, leaving the card-only decision unchanged.
+        """
+        if output_mtime is None:
+            return None
+        prefix = numeric_info["prefix"]
+        width = numeric_info["width"]
+        dirs = sequence_dirs or ["."]
+        card_by_num = {num: stem for num, stem in sequence}
+
+        def stem_name(number):
+            return f"{prefix}{number:0{width}d}"
+
+        card_inputs: list[str] = []
+        # Card frames whose RAW already moved: the RAW's date, which an
+        # uninterrupted import would have filed the whole frame under.
+        moved_raw_dates: dict[str, date] = {}
+        imported_count = 0
+        # Frames whose RAW is in the stack-input folder, whether the whole
+        # frame moved or only its RAW did: the evidence of an earlier run.
+        destination_backed = 0
+        prev_mtime = output_mtime
+        allowed_gap = MAX_OUTPUT_LAG_SECONDS
+        number = numeric_info["num"] - 1
+        while number >= 0 and len(card_inputs) + imported_count < (
+            MAX_STACK_INPUT_FRAMES
+        ):
+            if card_has_excluded_frame(dirs, prefix, number, card_by_num):
+                break
+            card_stem = card_by_num.get(number)
+            if card_stem is not None:
+                record = file_db[card_stem]
+                if card_stem in claimed_stems:
+                    break
+                if has_standard_raw(record):
+                    frame_mtime = get_stem_mtime(record, args.verbose)
+                else:
+                    # The frame's RAW may already have moved while its JPG
+                    # stayed behind; that RAW is then this frame's backing.
+                    frame_mtime = imported_frame_mtime(
+                        (STACK_INPUT_DIR,),
+                        stem_name(number),
+                        prev_mtime,
+                        allowed_gap,
+                        raw_only=True,
+                    )
+                    if frame_mtime is not None:
+                        destination_backed += 1
+                        moved_raw_dates[card_stem] = frame_mtime.date()
+                if frame_mtime is None or (
+                    abs((prev_mtime - frame_mtime).total_seconds()) > allowed_gap
+                ):
+                    break
+                card_inputs.append(card_stem)
+            else:
+                frame_mtime = imported_frame_mtime(
+                    (STACK_INPUT_DIR,),
+                    stem_name(number),
+                    prev_mtime,
+                    allowed_gap,
+                    raw_only=True,
+                )
+                if frame_mtime is None:
+                    break
+                imported_count += 1
+                destination_backed += 1
+            prev_mtime = frame_mtime
+            allowed_gap = MAX_INPUT_GAP_SECONDS
+            number -= 1
+
+        total = len(card_inputs) + imported_count
+        if not destination_backed or not (
+            MIN_STACK_INPUT_FRAMES <= total <= MAX_STACK_INPUT_FRAMES
+        ):
+            return None
+
+        if total == MAX_STACK_INPUT_FRAMES:
+            # Burst safety, as in scan_stack_inputs: a full-size "stack" whose
+            # preceding frames continue within MAX_BURST_GAP_SECONDS of its
+            # first frame is more likely a burst or focus bracket.  Those
+            # older frames were imported before the stack, so look for them
+            # on the card and in both destination trees.
+            first_frame_mtime = prev_mtime
+            probe_roots = (STACK_INPUT_DIR, _lightroom_import_base_dir())
+            probes_in_burst = 0
+            for _ in range(BURST_EXTRA_FRAMES_REQUIRED):
+                if number < 0 or card_has_excluded_frame(
+                    dirs, prefix, number, card_by_num
+                ):
+                    break
+                card_stem = card_by_num.get(number)
+                if card_stem is not None:
+                    probe_mtime = get_stem_mtime(file_db[card_stem], args.verbose)
+                    if probe_mtime is None or (
+                        abs((first_frame_mtime - probe_mtime).total_seconds())
+                        > MAX_BURST_GAP_SECONDS
+                    ):
+                        break
+                elif (
+                    imported_frame_mtime(
+                        probe_roots,
+                        stem_name(number),
+                        first_frame_mtime,
+                        MAX_BURST_GAP_SECONDS,
+                        raw_only=False,
+                    )
+                    is None
+                ):
+                    break
+                probes_in_burst += 1
+                number -= 1
+            if probes_in_burst >= BURST_EXTRA_FRAMES_REQUIRED:
+                if args.debug_stacks:
+                    print(
+                        "  - Resumed stack REJECTED: burst safety check "
+                        "triggered by frames preceding the stack."
+                    )
+                return None
+
+        return card_inputs, destination_backed, moved_raw_dates
+
+    def resumable_stack_output(output_data) -> bool:
+        """True when an earlier import's stack-input files continue this JPG."""
+        numeric_info = output_data.get("numeric")
+        jpg_record = output_data["files"].get("jpg")
+        if not numeric_info or not jpg_record:
+            return False
+        sequence, sequence_dirs = get_stack_sequence(
+            output_data, numeric_info["prefix"]
+        )
+        return (
+            scan_resumed_stack_inputs(
+                numeric_info,
+                get_file_mtime(jpg_record, args.verbose),
+                sequence,
+                sequence_dirs,
+                frozenset(),
+            )
+            is not None
+        )
 
     def scan_metadata_stack_inputs(
         sequence,
@@ -4290,6 +4570,7 @@ def main():
             metadata = stack_metadata_for_record(output_data)
             metadata_confirmed = metadata.state == StackMetadataState.FOCUS_STACK
             numeric_info = output_data.get("numeric")
+            moved_raw_dates = {}
             sequence = []
             sequence_dirs = []
             potential_inputs = []
@@ -4345,29 +4626,81 @@ def main():
                     rejected_no_sequence += 1
                     continue
                 idx = bisect_left(sequence, (output_num, ""))
+                # Frames an interrupted earlier import already moved into the
+                # stack-input folder (see scan_resumed_stack_inputs).
+                resumed = None
                 if idx == 0:
-                    if args.debug_stacks:
-                        print(
-                            "  - Stack REJECTED: Output is the first in its sequence."
-                        )
-                    rejected_first_in_sequence += 1
-                    continue
+                    # Every earlier frame may already have been imported.
+                    resumed = scan_resumed_stack_inputs(
+                        numeric_info,
+                        output_mtime,
+                        sequence,
+                        sequence_dirs,
+                        claimed_input_stems,
+                    )
+                    if resumed is None:
+                        if args.debug_stacks:
+                            print(
+                                "  - Stack REJECTED: Output is the first in its "
+                                "sequence."
+                            )
+                        rejected_first_in_sequence += 1
+                        continue
                 if output_mtime is None:
                     if args.debug_stacks:
                         print("  - Stack REJECTED: Output mtime is missing.")
                     rejected_no_mtime += 1
                     continue
-                potential_inputs, too_many_in_burst, inputs_not_all_raw_backed = (
-                    scan_stack_inputs(
-                        sequence,
-                        idx,
-                        output_num,
-                        output_mtime,
-                        output_data,
-                        claimed_input_stems,
+                if resumed is None:
+                    potential_inputs, too_many_in_burst, inputs_not_all_raw_backed = (
+                        scan_stack_inputs(
+                            sequence,
+                            idx,
+                            output_num,
+                            output_mtime,
+                            output_data,
+                            claimed_input_stems,
+                            report_raw_backing=False,
+                        )
                     )
-                )
-                is_valid_stack = (
+                    # The resume scan only answers when an earlier import's
+                    # files are in the stack-input folder, so a fresh import
+                    # is decided by the card scan alone.  It walks the same
+                    # card frames with the same checks and then continues
+                    # into frames (or RAWs of frames) that already moved, so
+                    # when it answers, its stack contains the card scan's.
+                    # That covers a stack that looks too short, one whose
+                    # frame lost only its RAW (and so looks JPG-only), and
+                    # one the card scan accepted but cut short at such a
+                    # frame.
+                    if (
+                        not too_many_in_burst
+                        and len(potential_inputs) < MAX_STACK_INPUT_FRAMES
+                    ):
+                        resumed = scan_resumed_stack_inputs(
+                            numeric_info,
+                            output_mtime,
+                            sequence,
+                            sequence_dirs,
+                            claimed_input_stems,
+                        )
+                    if inputs_not_all_raw_backed and resumed is None:
+                        report_inputs_not_all_raw_backed(
+                            output_data, potential_inputs
+                        )
+                else:
+                    too_many_in_burst = inputs_not_all_raw_backed = False
+                if resumed is not None:
+                    potential_inputs, imported_frames, moved_raw_dates = resumed
+                    too_many_in_burst = inputs_not_all_raw_backed = False
+                    print(
+                        f"Note: '{output_filename}' continues a stack from an "
+                        f"earlier, interrupted import: {imported_frames} of its "
+                        "frames are already in the stack-input folder (at least "
+                        "their RAW files), so the rest of the stack is kept "
+                        "with them."
+                    )
+                is_valid_stack = resumed is not None or (
                     MIN_STACK_INPUT_FRAMES
                     <= len(potential_inputs)
                     <= MAX_STACK_INPUT_FRAMES
@@ -4551,7 +4884,12 @@ def main():
                 if not date_record:
                     continue
 
-                input_file_date = get_file_date(date_record, args.verbose)
+                # A frame whose RAW an interrupted earlier import already
+                # moved joins that RAW's dated folder, as it would have on
+                # an uninterrupted run (RAW wins the stem's date).
+                input_file_date = moved_raw_dates.get(input_stem) or get_file_date(
+                    date_record, args.verbose
+                )
                 if not input_file_date:
                     skipped_missing_date += 1
                     if args.verbose:

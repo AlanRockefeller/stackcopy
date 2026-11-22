@@ -1490,6 +1490,18 @@ class StackcopyGUI(ctk.CTk):
             command=self._import_another,
         )
         self.result_action_btn.grid(row=0, column=1, padx=(10, 0))
+        # Shown beside a retry/continue action so a failed or cancelled run
+        # never strands the user without the source, destination and
+        # advanced settings.
+        self.result_settings_btn = ctk.CTkButton(
+            self.result_controls,
+            text="Change import settings",
+            fg_color="transparent",
+            border_width=1,
+            command=self._import_another,
+        )
+        self.result_settings_btn.grid(row=0, column=2, padx=(10, 0))
+        self.result_settings_btn.grid_remove()
         self.result_controls.grid_remove()
         self.card_followup_note = ctk.CTkFrame(self.activity, border_width=1)
         self.card_followup_note.grid(
@@ -2506,22 +2518,42 @@ class StackcopyGUI(ctk.CTk):
                 allow_open=True,
                 success=True,
             )
-        elif self._degraded:
-            self._show_result(
-                "Import finished, but not as planned",
-                "The files are safe but were not all placed as planned; review "
-                "the log before erasing the card.",
-                problems=max(1, problems),
-                allow_open=True,
-            )
         else:
-            self._show_result(
-                "Import did not finish",
-                f"Stackcopy exited with code {returncode}. Review the detailed "
-                "log; files already completed are safe.",
-                problems=max(1, problems),
-                allow_open=False,
-            )
+            # A card that loses power or is unplugged mid-import ends here.
+            # Re-running is safe - completed files are recognised at their
+            # destination - so always offer to pick up where it stopped.
+            source = self._pending[0][1] if len(self._pending[0]) > 1 else ""
+            source_gone = bool(source) and not os.path.isdir(source)
+            retry_label = "Retry preview" if preview else "Continue import"
+            if source_gone:
+                hint = (
+                    "The card or source folder is no longer available - it may "
+                    "have been disconnected or run out of battery. Files already "
+                    f"completed are safe. Reconnect it, then choose {retry_label} "
+                    "to pick up the rest."
+                )
+            else:
+                hint = (
+                    f"Choose {retry_label} to try the remaining files again, or "
+                    "review the detailed log."
+                )
+            if self._degraded:
+                self._show_result(
+                    "Import finished, but not as planned",
+                    "The files are safe but were not all placed as planned; "
+                    "review the log before erasing the card. " + hint,
+                    problems=max(1, problems),
+                    allow_open=True,
+                    retry_label=retry_label,
+                )
+            else:
+                self._show_result(
+                    "Preview did not finish" if preview else "Import did not finish",
+                    f"Stackcopy exited with code {returncode}. " + hint,
+                    problems=max(1, problems),
+                    allow_open=not preview,
+                    retry_label=retry_label,
+                )
 
     def _show_zero_plan_rows(self) -> None:
         """Keep the plan visible and explicit when the scan finds no media."""
@@ -2561,6 +2593,10 @@ class StackcopyGUI(ctk.CTk):
                 self._retry_current_operation if retry_label else self._import_another
             ),
         )
+        if retry_label:
+            self.result_settings_btn.grid()
+        else:
+            self.result_settings_btn.grid_remove()
         self.phase_var.set(heading)
         self.meta_var.set(details if success else "")
         self.result_body_var.set("" if success else details)
