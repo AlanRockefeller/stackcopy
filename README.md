@@ -414,7 +414,7 @@ downloaded at runtime.
 ExifTool 12.41 (March 2022) is the release that added `OM SYSTEM` MakerNote
 support. Before it, ExifTool only knew the older `OLYMPUS` signature, so an
 OM-1's MakerNote block is unrecognized and the `StackedImage` tag simply never
-appears. That is a hard capability floor, not a preference. Stackcopy 1.6.2 is
+appears. That is a hard capability floor, not a preference. Stackcopy 1.6.3 is
 tested against **ExifTool 13.59**, and newer is always fine.
 
 ### Why it matters
@@ -445,7 +445,7 @@ present, the heuristic is usually right.
 
 ```bash
 exiftool -ver          # your ExifTool, e.g. 13.59
-./stackcopy.py --version   # Stackcopy 1.6.2
+./stackcopy.py --version   # Stackcopy 1.6.3
 ```
 
 Every Lightroom-mode run also says so itself, on stderr, before it starts
@@ -576,8 +576,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.6.2
-- **Date**: October 10, 2026
+- **Version**: 1.6.3
+- **Date**: November 22, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

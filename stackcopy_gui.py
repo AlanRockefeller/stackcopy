@@ -2506,22 +2506,42 @@ class StackcopyGUI(ctk.CTk):
                 allow_open=True,
                 success=True,
             )
-        elif self._degraded:
-            self._show_result(
-                "Import finished, but not as planned",
-                "The files are safe but were not all placed as planned; review "
-                "the log before erasing the card.",
-                problems=max(1, problems),
-                allow_open=True,
-            )
         else:
-            self._show_result(
-                "Import did not finish",
-                f"Stackcopy exited with code {returncode}. Review the detailed "
-                "log; files already completed are safe.",
-                problems=max(1, problems),
-                allow_open=False,
-            )
+            # A card that loses power or is unplugged mid-import ends here.
+            # Re-running is safe - completed files are recognised at their
+            # destination - so always offer to pick up where it stopped.
+            source = self._pending[0][1] if len(self._pending[0]) > 1 else ""
+            source_gone = bool(source) and not os.path.isdir(source)
+            retry_label = "Retry preview" if preview else "Continue import"
+            if source_gone:
+                hint = (
+                    "The card or source folder is no longer available - it may "
+                    "have been disconnected or run out of battery. Files already "
+                    f"completed are safe. Reconnect it, then choose {retry_label} "
+                    "to pick up the rest."
+                )
+            else:
+                hint = (
+                    f"Choose {retry_label} to try the remaining files again, or "
+                    "review the detailed log."
+                )
+            if self._degraded:
+                self._show_result(
+                    "Import finished, but not as planned",
+                    "The files are safe but were not all placed as planned; "
+                    "review the log before erasing the card. " + hint,
+                    problems=max(1, problems),
+                    allow_open=True,
+                    retry_label=retry_label,
+                )
+            else:
+                self._show_result(
+                    "Preview did not finish" if preview else "Import did not finish",
+                    f"Stackcopy exited with code {returncode}. " + hint,
+                    problems=max(1, problems),
+                    allow_open=not preview,
+                    retry_label=retry_label,
+                )
 
     def _show_zero_plan_rows(self) -> None:
         """Keep the plan visible and explicit when the scan finds no media."""

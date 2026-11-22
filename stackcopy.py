@@ -29,7 +29,7 @@ from datetime import datetime, date, timedelta
 from enum import Enum
 from typing import Any
 
-STACKCOPY_VERSION = "1.6.2"
+STACKCOPY_VERSION = "1.6.3"
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -2336,7 +2336,7 @@ def format_action_message(
 # StackedImage tag is unreadable below this.
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION = (12, 41)
 EXIFTOOL_MINIMUM_OM_SYSTEM_VERSION_TEXT = "12.41"
-# The version Stackcopy 1.6.2 is tested against and ships with its packaged
+# The version Stackcopy 1.6.3 is tested against and ships with its packaged
 # GUI builds.  Newer is fine; this is a known-good floor for "recommended",
 # never a requirement, and Stackcopy never checks the internet for it.
 EXIFTOOL_RECOMMENDED_VERSION_TEXT = "13.59"

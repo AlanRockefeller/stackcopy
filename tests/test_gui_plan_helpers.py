@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -659,6 +660,71 @@ class InterruptedResultTests(unittest.TestCase):
             allow_open=True,
             retry_label="Try import again",
         )
+
+
+class FailedRunResultTests(unittest.TestCase):
+    """A card that drops out mid-import must leave a way to continue."""
+
+    @staticmethod
+    def window(source: str, *, preview: bool = False, degraded: bool = False):
+        window = mock.Mock(spec=gui.StackcopyGUI)
+        window._terminated_by_user = False
+        window._proc = mock.Mock()
+        window._low_space_report = None
+        window._assume_yes = False
+        window._log_lines = ["Failures: 3\n"]
+        window._total = 10
+        window._degraded = degraded
+        window._plan = None
+        args = ["--lightroomimport", source] + (["--dry"] if preview else [])
+        window._pending = (args, "/photos", "/stacks", preview)
+        window.progress = mock.Mock()
+        return window
+
+    def test_disconnected_card_offers_to_continue_after_reconnecting(self):
+        missing = os.path.join(tempfile.gettempdir(), "stackcopy-no-such-card")
+        window = self.window(missing)
+
+        gui.StackcopyGUI._handle_done(window, 1)
+
+        args, kwargs = window._show_result.call_args
+        self.assertEqual(args[0], "Import did not finish")
+        self.assertIn("Reconnect it, then choose Continue import", args[1])
+        self.assertEqual(kwargs["retry_label"], "Continue import")
+        self.assertTrue(kwargs["allow_open"])
+        self.assertEqual(kwargs["problems"], 3)
+
+    def test_failed_import_with_source_present_can_still_continue(self):
+        with tempfile.TemporaryDirectory() as source:
+            window = self.window(source)
+            gui.StackcopyGUI._handle_done(window, 1)
+
+        args, kwargs = window._show_result.call_args
+        self.assertNotIn("Reconnect", args[1])
+        self.assertEqual(kwargs["retry_label"], "Continue import")
+
+    def test_degraded_import_keeps_its_caution_and_can_continue(self):
+        missing = os.path.join(tempfile.gettempdir(), "stackcopy-no-such-card")
+        window = self.window(missing, degraded=True)
+
+        gui.StackcopyGUI._handle_done(window, 1)
+
+        args, kwargs = window._show_result.call_args
+        self.assertEqual(args[0], "Import finished, but not as planned")
+        self.assertIn("review the log before erasing the card", args[1])
+        self.assertIn("Reconnect it", args[1])
+        self.assertEqual(kwargs["retry_label"], "Continue import")
+
+    def test_failed_preview_offers_to_retry_the_preview(self):
+        missing = os.path.join(tempfile.gettempdir(), "stackcopy-no-such-card")
+        window = self.window(missing, preview=True)
+
+        gui.StackcopyGUI._handle_done(window, 1)
+
+        args, kwargs = window._show_result.call_args
+        self.assertEqual(args[0], "Preview did not finish")
+        self.assertEqual(kwargs["retry_label"], "Retry preview")
+        self.assertFalse(kwargs["allow_open"])
 
 
 class ConditionalScrollbarTests(unittest.TestCase):
