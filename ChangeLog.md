@@ -15,7 +15,16 @@
   of only "Import another card". When the card is gone, the result says so and
   asks you to reconnect it before continuing. Files that were already copied
   are recognized and skipped. Failed previews offer **Retry preview** in the
-  same way.
+  same way. A **Change import settings** button sits beside it, so you can
+  still pick a different card or folder.
+- **Continuing an interrupted import keeps each stack together.** Imports move
+  the oldest files first. If the card dropped out partway through a stack that
+  was found from file names and timing (not from camera stack metadata), the
+  re-run could see too few frames left on the card. It then filed the rest of
+  the stack, and the stacked JPG, as ordinary photos. Stackcopy now counts the
+  frames the earlier run already moved into the stack-input folder. They have
+  to match exactly by name and pass the usual timing rules. The rest of the
+  stack then goes where an uninterrupted import would have put it.
 
 ## **1.6.2 - 2026-10-10**
 

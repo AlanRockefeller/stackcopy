@@ -1490,6 +1490,18 @@ class StackcopyGUI(ctk.CTk):
             command=self._import_another,
         )
         self.result_action_btn.grid(row=0, column=1, padx=(10, 0))
+        # Shown beside a retry/continue action so a failed or cancelled run
+        # never strands the user without the source, destination and
+        # advanced settings.
+        self.result_settings_btn = ctk.CTkButton(
+            self.result_controls,
+            text="Change import settings",
+            fg_color="transparent",
+            border_width=1,
+            command=self._import_another,
+        )
+        self.result_settings_btn.grid(row=0, column=2, padx=(10, 0))
+        self.result_settings_btn.grid_remove()
         self.result_controls.grid_remove()
         self.card_followup_note = ctk.CTkFrame(self.activity, border_width=1)
         self.card_followup_note.grid(
@@ -2581,6 +2593,10 @@ class StackcopyGUI(ctk.CTk):
                 self._retry_current_operation if retry_label else self._import_another
             ),
         )
+        if retry_label:
+            self.result_settings_btn.grid()
+        else:
+            self.result_settings_btn.grid_remove()
         self.phase_var.set(heading)
         self.meta_var.set(details if success else "")
         self.result_body_var.set("" if success else details)

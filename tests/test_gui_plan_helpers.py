@@ -494,6 +494,7 @@ class ResultCardNoticeTests(unittest.TestCase):
             "result_controls",
             "open_btn",
             "result_action_btn",
+            "result_settings_btn",
             "phase_var",
             "meta_var",
             "result_body_var",
@@ -564,6 +565,9 @@ class ResultCardNoticeTests(unittest.TestCase):
         window.result_action_btn.configure.assert_called_once_with(
             text="Continue import", command=window._retry_current_operation
         )
+        # The way back to the source/destination/advanced settings stays.
+        window.result_settings_btn.grid.assert_called_once_with()
+        window.result_settings_btn.grid_remove.assert_not_called()
 
     def test_ordinary_result_restores_the_import_another_card_action(self):
         window = self.result_window(plan_payload())
@@ -580,6 +584,8 @@ class ResultCardNoticeTests(unittest.TestCase):
         window.result_action_btn.configure.assert_called_once_with(
             text="Import another card", command=window._import_another
         )
+        window.result_settings_btn.grid_remove.assert_called_once_with()
+        window.result_settings_btn.grid.assert_not_called()
 
     def test_completion_scrolls_to_the_visible_result_area(self):
         window = mock.Mock(spec=gui.StackcopyGUI)

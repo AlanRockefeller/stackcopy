@@ -4136,6 +4136,133 @@ def main():
 
         return potential_inputs, too_many_in_burst, inputs_not_all_raw_backed
 
+    imported_raw_listing_cache: dict[str, dict[tuple[str, str], str]] = {}
+
+    def imported_raw_listing(folder: str) -> dict[tuple[str, str], str]:
+        """Map (stem, lower-case RAW extension) -> path for one dated folder."""
+        cached = imported_raw_listing_cache.get(folder)
+        if cached is not None:
+            return cached
+        listing: dict[tuple[str, str], str] = {}
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    stem, ext = os.path.splitext(entry.name)
+                    if ext.lower() in RAW_EXTENSIONS and entry.is_file(
+                        follow_symlinks=False
+                    ):
+                        listing[(stem, ext.lower())] = entry.path
+        except OSError:
+            listing = {}
+        imported_raw_listing_cache[folder] = listing
+        return listing
+
+    def imported_stack_frame_mtime(stem: str, newer_mtime, allowed_gap):
+        """mtime of a stack frame an earlier import already moved, or None.
+
+        Only an exact-stem RAW file in the stack-input folder for the frame's
+        own date counts, and only if it sits within ``allowed_gap`` seconds of
+        the next newer frame - the same timing rule the card scan applies.
+        Moves and copies preserve mtime, so a moved frame keeps its capture
+        timing.  Anything unreadable or ambiguous is simply not evidence.
+        """
+        days = {
+            newer_mtime.date(),
+            (newer_mtime - timedelta(seconds=allowed_gap)).date(),
+        }
+        found = None
+        for day in sorted(days):
+            folder = os.path.join(
+                STACK_INPUT_DIR, str(day.year), day.strftime("%Y-%m-%d")
+            )
+            listing = imported_raw_listing(folder)
+            for (listed_stem, _ext), path in listing.items():
+                if listed_stem != stem:
+                    continue
+                try:
+                    mtime = datetime.fromtimestamp(os.stat(path).st_mtime)
+                except (OSError, ValueError, OverflowError):
+                    return None
+                if mtime.date() != day:
+                    # Not where an import would have put this frame.
+                    return None
+                if found is not None:
+                    return None  # two candidates: ambiguous, not evidence
+                found = mtime
+        if found is None:
+            return None
+        if abs((newer_mtime - found).total_seconds()) > allowed_gap:
+            return None
+        return found
+
+    def scan_resumed_stack_inputs(numeric_info, output_mtime, sequence):
+        """Re-assemble a heuristic stack that an interrupted import split.
+
+        Imports move files oldest first, so a card that dropped out partway
+        through a stack leaves its *earliest* frames already in the
+        stack-input folder and the rest on the card.  Seen from the card alone
+        the stack can then look too short, and filing the remainder as
+        ordinary photos would split it across destinations.
+
+        Walks backward from the output exactly as ``scan_stack_inputs`` does,
+        taking each consecutive frame from the card when it is there and
+        otherwise from the stack-input folder.  Returns ``(card_inputs,
+        imported_count)`` only when at least one frame came from an earlier
+        import and the combined stack satisfies the usual frame-count limits
+        (staying below the cap, where burst safety would need frames that
+        are no longer on the card); otherwise None, leaving today's
+        behaviour unchanged.
+        """
+        if output_mtime is None:
+            return None
+        prefix = numeric_info["prefix"]
+        width = numeric_info["width"]
+        card_by_num = {num: stem for num, stem in sequence}
+        card_inputs: list[str] = []
+        imported_count = 0
+        prev_mtime = output_mtime
+        allowed_gap = MAX_OUTPUT_LAG_SECONDS
+        number = numeric_info["num"] - 1
+        while number >= 0 and len(card_inputs) + imported_count < (
+            MAX_STACK_INPUT_FRAMES
+        ):
+            stem_name = f"{prefix}{number:0{width}d}"
+            card_stem = card_by_num.get(number)
+            if card_stem is not None:
+                record = file_db[card_stem]
+                if card_stem in claimed_input_stems:
+                    break
+                if has_standard_raw(record):
+                    frame_mtime = get_stem_mtime(record, args.verbose)
+                else:
+                    # The frame's RAW may already have moved while its JPG
+                    # stayed behind; the RAW in the stack-input folder is
+                    # then this frame's backing.
+                    frame_mtime = imported_stack_frame_mtime(
+                        stem_name, prev_mtime, allowed_gap
+                    )
+                if frame_mtime is None or (
+                    abs((prev_mtime - frame_mtime).total_seconds()) > allowed_gap
+                ):
+                    break
+                card_inputs.append(card_stem)
+            else:
+                frame_mtime = imported_stack_frame_mtime(
+                    stem_name, prev_mtime, allowed_gap
+                )
+                if frame_mtime is None:
+                    break
+                imported_count += 1
+            prev_mtime = frame_mtime
+            allowed_gap = MAX_INPUT_GAP_SECONDS
+            number -= 1
+        total = len(card_inputs) + imported_count
+        if not imported_count or not (
+            MIN_STACK_INPUT_FRAMES <= total < MAX_STACK_INPUT_FRAMES
+        ):
+            return None
+        return card_inputs, imported_count
+
     def scan_metadata_stack_inputs(
         sequence,
         idx,
@@ -4345,29 +4472,57 @@ def main():
                     rejected_no_sequence += 1
                     continue
                 idx = bisect_left(sequence, (output_num, ""))
+                # Frames an interrupted earlier import already moved into the
+                # stack-input folder (see scan_resumed_stack_inputs).
+                resumed = None
                 if idx == 0:
-                    if args.debug_stacks:
-                        print(
-                            "  - Stack REJECTED: Output is the first in its sequence."
-                        )
-                    rejected_first_in_sequence += 1
-                    continue
+                    # Every earlier frame may already have been imported.
+                    resumed = scan_resumed_stack_inputs(
+                        numeric_info, output_mtime, sequence
+                    )
+                    if resumed is None:
+                        if args.debug_stacks:
+                            print(
+                                "  - Stack REJECTED: Output is the first in its "
+                                "sequence."
+                            )
+                        rejected_first_in_sequence += 1
+                        continue
                 if output_mtime is None:
                     if args.debug_stacks:
                         print("  - Stack REJECTED: Output mtime is missing.")
                     rejected_no_mtime += 1
                     continue
-                potential_inputs, too_many_in_burst, inputs_not_all_raw_backed = (
-                    scan_stack_inputs(
-                        sequence,
-                        idx,
-                        output_num,
-                        output_mtime,
-                        output_data,
-                        claimed_input_stems,
+                if resumed is None:
+                    potential_inputs, too_many_in_burst, inputs_not_all_raw_backed = (
+                        scan_stack_inputs(
+                            sequence,
+                            idx,
+                            output_num,
+                            output_mtime,
+                            output_data,
+                            claimed_input_stems,
+                        )
                     )
-                )
-                is_valid_stack = (
+                    if (
+                        len(potential_inputs) < MIN_STACK_INPUT_FRAMES
+                        and not too_many_in_burst
+                        and not inputs_not_all_raw_backed
+                    ):
+                        resumed = scan_resumed_stack_inputs(
+                            numeric_info, output_mtime, sequence
+                        )
+                else:
+                    too_many_in_burst = inputs_not_all_raw_backed = False
+                if resumed is not None:
+                    potential_inputs, imported_frames = resumed
+                    print(
+                        f"Note: '{output_filename}' continues a stack from an "
+                        f"earlier, interrupted import: {imported_frames} of its "
+                        "frames are already in the stack-input folder, so the "
+                        "rest of the stack is kept with them."
+                    )
+                is_valid_stack = resumed is not None or (
                     MIN_STACK_INPUT_FRAMES
                     <= len(potential_inputs)
                     <= MAX_STACK_INPUT_FRAMES
