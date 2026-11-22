@@ -3972,6 +3972,15 @@ def main():
                 continue
             group = stack_detection_group_key(data)
             if group in jpg_only_stack_groups:
+                # An interrupted import that already moved every RAW frame
+                # leaves a folder that only *looks* JPG-only.  A strict match
+                # in the stack-input folder proves those RAWs existed; a
+                # genuinely JPG-only card has no such evidence.
+                if operation_mode == "lightroomimport" and (
+                    resumable_stack_output(data)
+                ):
+                    stacked_outputs.add(stem)
+                    continue
                 if group not in metadata_positive_stack_groups:
                     warn_jpg_only_stack_group(group)
                 continue
@@ -3979,8 +3988,23 @@ def main():
             stacked_outputs.add(stem)
         return stacked_outputs
 
+    def report_inputs_not_all_raw_backed(output_data, potential_inputs):
+        nonlocal inputs_not_all_raw_backed_skipped
+        inputs_not_all_raw_backed_skipped += 1
+        warn_inputs_not_all_raw_backed(output_data, potential_inputs)
+        if args.debug_stacks:
+            print(
+                "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
+            )
+
     def scan_stack_inputs(
-        sequence, idx, output_num, output_mtime, output_data, claimed_input_stems
+        sequence,
+        idx,
+        output_num,
+        output_mtime,
+        output_data,
+        claimed_input_stems,
+        report_raw_backing=True,
     ):
         """Backward-scan from a stacked-output candidate to collect its inputs.
 
@@ -3991,8 +4015,9 @@ def main():
 
         ``output_mtime`` must be non-None. Returns
         ``(potential_inputs, too_many_in_burst, inputs_not_all_raw_backed)``.
+        With ``report_raw_backing`` false the caller reports a RAW-backing
+        rejection itself (see report_inputs_not_all_raw_backed).
         """
-        nonlocal inputs_not_all_raw_backed_skipped
 
         potential_inputs = []
         expected_num = output_num - 1
@@ -4126,13 +4151,8 @@ def main():
         inputs_not_all_raw_backed = bool(potential_inputs) and not (
             input_frames_are_raw_backed
         )
-        if inputs_not_all_raw_backed:
-            inputs_not_all_raw_backed_skipped += 1
-            warn_inputs_not_all_raw_backed(output_data, potential_inputs)
-            if args.debug_stacks:
-                print(
-                    "  - Stack REJECTED: inferred input frames are not all RAW-backed; automatic stack detection requires RAW-backed input frames."
-                )
+        if inputs_not_all_raw_backed and report_raw_backing:
+            report_inputs_not_all_raw_backed(output_data, potential_inputs)
 
         return potential_inputs, too_many_in_burst, inputs_not_all_raw_backed
 
@@ -4238,7 +4258,9 @@ def main():
                 return True
         return False
 
-    def scan_resumed_stack_inputs(numeric_info, output_mtime, sequence, sequence_dirs):
+    def scan_resumed_stack_inputs(
+        numeric_info, output_mtime, sequence, sequence_dirs, claimed_stems
+    ):
         """Re-assemble a heuristic stack that an interrupted import split.
 
         Imports move files oldest first, so a card that dropped out partway
@@ -4252,8 +4274,8 @@ def main():
         otherwise from the stack-input folder.  At the frame cap it repeats
         the burst-safety probe, looking for the preceding frames on the card
         or wherever the earlier run would have put them.  Returns
-        ``(card_inputs, imported_count)`` only when at least one frame came
-        from an earlier import and the combined stack passes the usual
+        ``(card_inputs, destination_backed)`` only when at least one frame's
+        RAW came from an earlier import and the combined stack passes the usual
         checks; otherwise None, leaving the card-only decision unchanged.
         """
         if output_mtime is None:
@@ -4268,6 +4290,9 @@ def main():
 
         card_inputs: list[str] = []
         imported_count = 0
+        # Frames whose RAW is in the stack-input folder, whether the whole
+        # frame moved or only its RAW did: the evidence of an earlier run.
+        destination_backed = 0
         prev_mtime = output_mtime
         allowed_gap = MAX_OUTPUT_LAG_SECONDS
         number = numeric_info["num"] - 1
@@ -4279,7 +4304,7 @@ def main():
             card_stem = card_by_num.get(number)
             if card_stem is not None:
                 record = file_db[card_stem]
-                if card_stem in claimed_input_stems:
+                if card_stem in claimed_stems:
                     break
                 if has_standard_raw(record):
                     frame_mtime = get_stem_mtime(record, args.verbose)
@@ -4293,6 +4318,8 @@ def main():
                         allowed_gap,
                         raw_only=True,
                     )
+                    if frame_mtime is not None:
+                        destination_backed += 1
                 if frame_mtime is None or (
                     abs((prev_mtime - frame_mtime).total_seconds()) > allowed_gap
                 ):
@@ -4309,12 +4336,13 @@ def main():
                 if frame_mtime is None:
                     break
                 imported_count += 1
+                destination_backed += 1
             prev_mtime = frame_mtime
             allowed_gap = MAX_INPUT_GAP_SECONDS
             number -= 1
 
         total = len(card_inputs) + imported_count
-        if not imported_count or not (
+        if not destination_backed or not (
             MIN_STACK_INPUT_FRAMES <= total <= MAX_STACK_INPUT_FRAMES
         ):
             return None
@@ -4362,7 +4390,27 @@ def main():
                     )
                 return None
 
-        return card_inputs, imported_count
+        return card_inputs, destination_backed
+
+    def resumable_stack_output(output_data) -> bool:
+        """True when an earlier import's stack-input files continue this JPG."""
+        numeric_info = output_data.get("numeric")
+        jpg_record = output_data["files"].get("jpg")
+        if not numeric_info or not jpg_record:
+            return False
+        sequence, sequence_dirs = get_stack_sequence(
+            output_data, numeric_info["prefix"]
+        )
+        return (
+            scan_resumed_stack_inputs(
+                numeric_info,
+                get_file_mtime(jpg_record, args.verbose),
+                sequence,
+                sequence_dirs,
+                frozenset(),
+            )
+            is not None
+        )
 
     def scan_metadata_stack_inputs(
         sequence,
@@ -4579,7 +4627,11 @@ def main():
                 if idx == 0:
                     # Every earlier frame may already have been imported.
                     resumed = scan_resumed_stack_inputs(
-                        numeric_info, output_mtime, sequence, sequence_dirs
+                        numeric_info,
+                        output_mtime,
+                        sequence,
+                        sequence_dirs,
+                        claimed_input_stems,
                     )
                     if resumed is None:
                         if args.debug_stacks:
@@ -4603,25 +4655,45 @@ def main():
                             output_mtime,
                             output_data,
                             claimed_input_stems,
+                            report_raw_backing=False,
                         )
                     )
+                    # The resume scan only answers when an earlier import's
+                    # files are in the stack-input folder, so a fresh import
+                    # is decided by the card scan alone.  It walks the same
+                    # card frames with the same checks and then continues
+                    # into frames (or RAWs of frames) that already moved, so
+                    # when it answers, its stack contains the card scan's.
+                    # That covers a stack that looks too short, one whose
+                    # frame lost only its RAW (and so looks JPG-only), and
+                    # one the card scan accepted but cut short at such a
+                    # frame.
                     if (
-                        len(potential_inputs) < MIN_STACK_INPUT_FRAMES
-                        and not too_many_in_burst
-                        and not inputs_not_all_raw_backed
+                        not too_many_in_burst
+                        and len(potential_inputs) < MAX_STACK_INPUT_FRAMES
                     ):
                         resumed = scan_resumed_stack_inputs(
-                            numeric_info, output_mtime, sequence, sequence_dirs
+                            numeric_info,
+                            output_mtime,
+                            sequence,
+                            sequence_dirs,
+                            claimed_input_stems,
+                        )
+                    if inputs_not_all_raw_backed and resumed is None:
+                        report_inputs_not_all_raw_backed(
+                            output_data, potential_inputs
                         )
                 else:
                     too_many_in_burst = inputs_not_all_raw_backed = False
                 if resumed is not None:
                     potential_inputs, imported_frames = resumed
+                    too_many_in_burst = inputs_not_all_raw_backed = False
                     print(
                         f"Note: '{output_filename}' continues a stack from an "
                         f"earlier, interrupted import: {imported_frames} of its "
-                        "frames are already in the stack-input folder, so the "
-                        "rest of the stack is kept with them."
+                        "frames are already in the stack-input folder (at least "
+                        "their RAW files), so the rest of the stack is kept "
+                        "with them."
                     )
                 is_valid_stack = resumed is not None or (
                     MIN_STACK_INPUT_FRAMES

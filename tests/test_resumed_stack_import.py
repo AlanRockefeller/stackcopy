@@ -64,18 +64,37 @@ def card_vanishes_after(successful_moves: int):
 
 
 class ResumedHeuristicStackTests(unittest.TestCase):
-    def make_card(self, root: Path, frames: int = 4, *, start: datetime = BASE):
-        """A heuristic stack: RAW+JPG frames 1..N, then a JPG-only output."""
+    def make_card(
+        self,
+        root: Path,
+        frames: int = 4,
+        *,
+        start: datetime = BASE,
+        raw_lead: float = 0.0,
+        single_shot: bool = True,
+    ):
+        """A heuristic stack: RAW+JPG frames 1..N, then a JPG-only output.
+
+        ``raw_lead`` stamps each RAW that many seconds before its JPG, so an
+        oldest-first import can move a frame's RAW and leave its JPG.
+        """
         card = root / "card" / "DCIM" / "100OMSYS"
         for number in range(1, frames + 1):
-            make_pair(card, f"P808{number:04d}", start + timedelta(seconds=number))
+            when = start + timedelta(seconds=number)
+            write_file(card / f"P808{number:04d}.JPG", b"jpg", when)
+            write_file(
+                card / f"P808{number:04d}.ORF",
+                b"raw",
+                when - timedelta(seconds=raw_lead),
+            )
         write_file(
             card / f"P808{frames + 1:04d}.JPG",
             b"stacked output",
             start + timedelta(seconds=frames + 5),
         )
-        # An unrelated, later single shot that must stay an ordinary photo.
-        make_pair(card, f"P808{frames + 2:04d}", start + timedelta(minutes=10))
+        if single_shot:
+            # An unrelated, later single shot that must stay an ordinary photo.
+            make_pair(card, f"P808{frames + 2:04d}", start + timedelta(minutes=10))
         return root / "card"
 
     def run_import(self, root: Path, *extra):
@@ -96,6 +115,7 @@ class ResumedHeuristicStackTests(unittest.TestCase):
             return layout(root)
 
     def assert_resume_matches_baseline(self, frames: int, **card_kwargs):
+        """Interrupt after every possible number of moves; re-run; compare."""
         expected = self.baseline(frames, **card_kwargs)
         total_files = sum(len(paths) for paths in expected.values())
         for k in range(total_files + 1):
@@ -111,6 +131,34 @@ class ResumedHeuristicStackTests(unittest.TestCase):
 
     def test_every_interruption_point_resumes_to_the_uninterrupted_layout(self):
         self.assert_resume_matches_baseline(frames=4)
+
+    def test_resumes_when_every_raw_left_the_card_and_no_other_raw_remains(self):
+        # Without the later single shot, the folder looks JPG-only once every
+        # frame has moved; the leftover output must still be a stack output.
+        self.assert_resume_matches_baseline(frames=3, single_shot=False)
+
+    def test_resumes_when_a_frame_raw_moved_but_its_jpg_stayed(self):
+        # RAWs stamped just before their JPGs move first, so an interruption
+        # can leave a frame's JPG on the card while its RAW is imported.
+        self.assert_resume_matches_baseline(frames=3, raw_lead=0.1)
+        self.assert_resume_matches_baseline(
+            frames=4, raw_lead=0.1, single_shot=False
+        )
+
+    def test_genuinely_jpg_only_card_still_disables_stack_detection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card" / "DCIM" / "100OMSYS"
+            for number in range(1, 5):
+                write_file(
+                    card / f"P808{number:04d}.JPG",
+                    b"jpg",
+                    BASE + timedelta(seconds=number),
+                )
+            code, output = self.run_import(root)
+            self.assertEqual(code, 0, output)
+            self.assertIn("JPG-only import detected", output)
+            self.assertIn("Accepted stacks:               0", output)
 
     def test_minimum_size_stack_resumes_to_the_uninterrupted_layout(self):
         self.assert_resume_matches_baseline(frames=3)
