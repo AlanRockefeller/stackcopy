@@ -786,7 +786,14 @@ def previous_adjacent_camera_dir(
     suffix = match.group(2)
     previous_folder = f"{folder_number - 1:03d}{suffix}"
     previous_dir = os.path.normpath(os.path.join(parent, previous_folder))
-    return known_relative_dirs_by_key.get(_relative_dir_lookup_key(previous_dir))
+    candidate = known_relative_dirs_by_key.get(_relative_dir_lookup_key(previous_dir))
+    # The lookup ignores case, but only the roll folder's own name may differ.
+    # Both paths come from one scan, so a shared parent is spelled the same;
+    # dcim/100OLYMP under a different parent than DCIM/101OLYMP (possible on
+    # a case-sensitive disk) is an unrelated folder, not the previous roll.
+    if candidate is None or os.path.dirname(os.path.normpath(candidate)) != parent:
+        return None
+    return candidate
 
 
 def iter_source_file_entries(src_dir: str, recursive: bool = False, exclude_dirs=()):

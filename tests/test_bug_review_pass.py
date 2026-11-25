@@ -316,6 +316,38 @@ class CaseInsensitiveStemTests(unittest.TestCase):
             self.assertIn("multiple JPG files share stem", output)
             self.assertEqual(tree(card), {"P8080001.JPG", "p8080001.jpg"})
 
+    def test_a_previous_roll_under_a_different_parent_is_not_borrowed(self):
+        # dcim/100OLYMP is not the roll before DCIM/101OLYMP: on a
+        # case-sensitive disk they sit under different parents.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card"
+            (card / "dcim").mkdir(parents=True)
+            if (card / "DCIM").exists():
+                self.skipTest("case-insensitive filesystem")
+            base = datetime(2026, 8, 24, 12)
+            for index, stem in enumerate(("p8081866", "p8081867")):
+                make_pair(card / "dcim" / "100OLYMP", stem, base.replace(second=index * 2))
+            make_pair(card / "DCIM" / "101OLYMP", "P8081868", base.replace(second=4))
+            write_file(
+                card / "DCIM" / "101OLYMP" / "P8081869.JPG",
+                b"stack output",
+                base.replace(second=6),
+            )
+
+            code, output = run_main(
+                ["--lightroomimport", str(card)],
+                lightroom=root / "Lightroom",
+                stack_input=root / "StackInput",
+                metadata={},
+            )
+
+            self.assertEqual(code, 0, output)
+            borrowed = {
+                name for name in tree(root / "StackInput") if "p808186" in name
+            }
+            self.assertEqual(borrowed, set(), output)
+
     def test_a_stack_is_found_when_its_frames_prefix_case_differs_from_the_output(self):
         # Lower-case JPG frames sort first and name their records "p...",
         # while the stacked output is "P...": one sequence all the same.
