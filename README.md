@@ -581,7 +581,7 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 ## Version
 
 - **Version**: 1.6.4
-- **Date**: November 24, 2026
+- **Date**: November 25, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

@@ -1,6 +1,6 @@
 # Change Log
 
-## **1.6.4 - 2026-11-24**
+## **1.6.4 - 2026-11-25**
 
 - **"Stop after this file" now really waits for the file to finish.** It used
   to stop the import in the middle of a copy. That left a half-copied temporary
