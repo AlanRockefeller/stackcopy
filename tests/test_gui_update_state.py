@@ -384,6 +384,7 @@ class ResultHandlingTests(unittest.TestCase):
             _closing=False,
             _update_generation=1,
             _update_checking=True,
+            _update_manual=False,
             _update_info=None,
             _state=dict(state or {}),
             update_check_btn=SimpleNamespace(
@@ -569,7 +570,7 @@ class BackgroundCheckTests(unittest.TestCase):
     def run_check(self, manual, result=None, error=None):
         target = self.fake_gui()
 
-        def fake_check(current):
+        def fake_check(current, **_kwargs):
             self.assertNotEqual(
                 __import__("threading").current_thread().name,
                 "MainThread",
@@ -579,9 +580,11 @@ class BackgroundCheckTests(unittest.TestCase):
                 raise error
             return result
 
+        # The check runs on a worker thread, so the stand-in must stay in place
+        # until its answer is back - not just until the thread was started.
         with mock.patch.object(updater, "check_for_update", fake_check):
             gui.StackcopyGUI._start_update_check(target, manual)
-        kind, payload = target._queue.get(timeout=5)
+            kind, payload = target._queue.get(timeout=5)
         return kind, payload, target
 
     def test_a_successful_check_is_delivered_through_the_ui_queue(self):

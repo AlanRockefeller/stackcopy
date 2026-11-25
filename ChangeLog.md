@@ -1,5 +1,57 @@
 # Change Log
 
+## **1.6.4 - 2026-11-24**
+
+- **"Stop after this file" now really waits for the file to finish.** It used
+  to stop the import in the middle of a copy. That left a half-copied temporary
+  file in the Lightroom folder, which could be several gigabytes for a video.
+  Now the current file is finished and nothing new is started. Closing the
+  window during an import does the same. If the import hasn't started copying
+  yet, it still stops right away.
+- **File names that differ only in upper and lower case are now matched.**
+  `IMG_1234.JPG` and `img_1234.orf` are treated as the same photo, so the JPG
+  is filed with its RAW. If a card has two files of the same type whose names
+  differ only in case, Stackcopy reports them and leaves them on the card.
+- **Hidden macOS `._` files are no longer imported as photos.** A card that has
+  been used on a Mac often has these small metadata files. They used to be
+  copied into the Lightroom folder, sent to ExifTool, and could cause a false
+  "JPG-only import" warning. They now stay on the card.
+- **Trash and search-index folders on the card are skipped.** Folders like
+  `.Trashes`, `.Trash-1000`, `$RECYCLE.BIN` and `.Spotlight-V100` are not
+  imported. They also no longer stop Stackcopy from saying the card is empty
+  after an import.
+- **Stacked photos with a numbered name are not renamed twice.** Files such as
+  `P8081888 stacked__2.JPG` are now recognised as already processed.
+- **A photo's RAW and JPG stay in the same date folder when an interrupted
+  import is recovered.** Recovery used to date each file on its own, so a photo
+  taken around midnight could be split across two folders.
+- **Stackcopy warns when ExifTool skips files.** If ExifTool did not report on
+  some files, for example because of unusual characters in a folder name on
+  Windows, those files used to lose their stack information without any notice.
+- **Fixed the Windows GUI failing to import when the destination folder name
+  has characters such as Chinese or Cyrillic letters.**
+- **"Continue import" shows the right numbers.** The counters and copy speed
+  used to count the whole card instead of only what was left to do.
+- **Pressing Start right after choosing a card no longer runs a preview and an
+  import at the same time.**
+- **A preview no longer asks "Proceed anyway?" when the destination is low on
+  space.** Nothing is moved during a preview, so there is nothing to proceed
+  with.
+- **"Check for Updates" always answers.** Clicking it while the automatic
+  check at startup was still running used to show nothing.
+- **An unexpected error while reading the import's progress no longer leaves
+  the window stuck showing an import that has ended.**
+- **Error messages at startup on Linux show `&` and `<` correctly.**
+- **Update checks no longer rely only on the computer's own security
+  certificates.** The Mac and Windows apps now include their own copy of the
+  standard certificate list as well, so the check should work on Macs whose
+  Python setup can't find the system certificates.
+- **Update checks are safer.** A malformed release link can no longer open a
+  page outside the Stackcopy releases. A wrong date in the settings file far in
+  the future no longer stops automatic update checks.
+- **Pressing Ctrl-D at the `-i` confirmation prompt** now means "no" instead of
+  showing a Python error.
+
 ## **1.6.3 - 2026-11-22**
 
 - The GUI's import button remains available while the initial card scan is

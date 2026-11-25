@@ -7,3 +7,6 @@
 # PyInstaller cannot cross-compile: build the .app on macOS and the Windows
 # folder bundle on Windows (the GitHub Actions workflow does both automatically).
 pyinstaller==6.6.*
+# CA certificates for the GUI's update check. A frozen app's OpenSSL looks for
+# them where they were on the build machine, which most Macs do not have.
+certifi>=2024.2.2

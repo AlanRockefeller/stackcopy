@@ -46,7 +46,7 @@ number is imported as an ordinary photo instead.
 For `--copy`, `--rename`, and `--stackcopy`, the simple JPG-without-RAW rule is
 still used.
 
-The matching is case-insensitive, so `IMG_1234.JPG` will match with `img_1234.orf` just fine.
+The matching is case-insensitive, so `IMG_1234.JPG` will match with `img_1234.orf` just fine. Each file keeps its own spelling at its destination. Two files of the same type whose names differ only in case (`P1.JPG` and `p1.jpg` on a case-sensitive disk) can't be told apart, so they are reported and both left in place.
 
 Supported RAW extensions: `.orf`, `.cr2`, `.nef`, `.arw`, `.dng`, `.pef`, `.rw2`, `.raf`, `.raw`, `.sr2`. Olympus/OM `.ORI` originals are preserved as a separate companion type, so an `.ORF` and `.ORI` with the same stem cannot replace one another. An `.ORI` counts as a companion original (a JPG that has one is not treated as an unpaired in-camera output) but it is not ordinary RAW backing, so it never makes a frame look like a RAW-backed focus-stack input on its own.
 
@@ -84,7 +84,9 @@ clutter the library.
    role, estimates time remaining from processed file sizes and the average
    speed during the import, and counts stacked photos, stack frames,
    singles/video, and problems separately. **Stop after this file** is safe:
-   operations happen one file at a time and a later run picks up the rest.
+   the file being copied is finished, no new one is started, and a later run
+   picks up the rest. Quitting the window mid-import does the same before it
+   closes.
    The estimate appears after at least 15 seconds and five processed files;
    scanning and safety checks are excluded. It can still change as drive speed
    changes. Previews do not show a transfer-time estimate.
@@ -245,6 +247,8 @@ Moves the input files of a stack to a dated folder structure and renames the out
 ### `--lightroomimport [DIR]`
 
 The full workflow. Scans the source directory recursively, plans all moves first, shows a summary, then moves files oldest-first by file modification time, which normally corresponds to capture time on a camera card. Stack inputs go to a separate directory, stacked outputs and remaining files go to your Lightroom library. Videos are treated like single-shot photos and moved to the same dated Lightroom destination. It doesn't actually import to Lightroom - it just puts the photos and videos where Lightroom would have put them - except for the stack input files, which go to a different directory. You'll want them if you don't like how the in-camera stacking worked, or want to stack the raw files.
+
+The recursive scan skips the trash and index folders operating systems keep on a card (`.Trashes`, `.Trash-1000`, `$RECYCLE.BIN`, `.Spotlight-V100`, `.fseventsd`, `System Volume Information`), so photos you deleted in Finder or a file manager are not imported. macOS `._*` metadata files are left on the card too; neither keeps the card from counting as empty afterwards.
 
 ```bash
 ./stackcopy.py --lightroomimport /photos/camera-import/
@@ -414,7 +418,7 @@ downloaded at runtime.
 ExifTool 12.41 (March 2022) is the release that added `OM SYSTEM` MakerNote
 support. Before it, ExifTool only knew the older `OLYMPUS` signature, so an
 OM-1's MakerNote block is unrecognized and the `StackedImage` tag simply never
-appears. That is a hard capability floor, not a preference. Stackcopy 1.6.3 is
+appears. That is a hard capability floor, not a preference. Stackcopy 1.6.4 is
 tested against **ExifTool 13.59**, and newer is always fine.
 
 ### Why it matters
@@ -445,7 +449,7 @@ present, the heuristic is usually right.
 
 ```bash
 exiftool -ver          # your ExifTool, e.g. 13.59
-./stackcopy.py --version   # Stackcopy 1.6.3
+./stackcopy.py --version   # Stackcopy 1.6.4
 ```
 
 Every Lightroom-mode run also says so itself, on stderr, before it starts
@@ -576,8 +580,8 @@ If you run stackcopy inside WSL against files under `/mnt/c/`, `/mnt/d/`, etc., 
 
 ## Version
 
-- **Version**: 1.6.3
-- **Date**: November 22, 2026
+- **Version**: 1.6.4
+- **Date**: November 24, 2026
 - **Author**: Alan Rockefeller
 - **Repository**: https://github.com/AlanRockefeller/stackcopy
 - **License**: MIT

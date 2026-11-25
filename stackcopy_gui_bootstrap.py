@@ -128,6 +128,9 @@ def _native_dialog(title: str, message: str) -> bool:
                 [
                     executable,
                     "--error",
+                    # The message holds paths and shell commands; as Pango
+                    # markup an "&" or "<" in them would garble or blank it.
+                    "--no-markup",
                     f"--title={title}",
                     "--width=520",
                     f"--text={message}",
