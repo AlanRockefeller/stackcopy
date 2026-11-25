@@ -91,6 +91,9 @@ APP_NAME = "Stackcopy"
 APP_TITLE = f"{APP_NAME} {STACKCOPY_VERSION}".strip()
 SETTINGS_FILENAME = "gui-state.json"
 METADATA_CACHE_FILENAME = "stack-metadata-cache.json"
+# Must match stackcopy.STOP_FILE_ENV; spelled out so the GUI does not depend on
+# importing the CLI module.
+STOP_FILE_ENV = "STACKCOPY_STOP_FILE"
 CARD_POLL_MS = 2000
 MOVE_MODE = "Move off the card"
 COPY_MODE = "Copy, leave card untouched"
@@ -647,6 +650,36 @@ def _settings_path() -> Path:
 _metadata_cache_dir: str | None = None
 
 
+def update_check_opener():
+    """An ``urlopen`` that can verify GitHub's certificate in the packaged app.
+
+    A PyInstaller build carries its own OpenSSL, which looks for CA
+    certificates where they lived on the build machine - a path most Macs do
+    not have - so every update check could fail certificate verification.
+    certifi's bundle is *added* to the platform's default trust store, never
+    substituted for it, so a system-installed corporate root still counts.
+    Returns None (use the default) when certifi is not installed, as in an
+    ordinary source checkout.
+    """
+    try:
+        import ssl
+        import urllib.request
+
+        import certifi
+    except ImportError:
+        return None
+    try:
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=certifi.where())
+    except (OSError, ValueError, ssl.SSLError):
+        return None
+
+    def opener(request, timeout):
+        return urllib.request.urlopen(request, timeout=timeout, context=context)
+
+    return opener
+
+
 def metadata_cache_path() -> str:
     """Where the CLI remembers camera stack metadata between plan and run.
 
@@ -660,6 +693,27 @@ def metadata_cache_path() -> str:
         _metadata_cache_dir = tempfile.mkdtemp(prefix="stackcopy-metadata-")
         atexit.register(shutil.rmtree, _metadata_cache_dir, True)
     return os.path.join(_metadata_cache_dir, METADATA_CACHE_FILENAME)
+
+
+_stop_request_dir: str | None = None
+
+
+def new_stop_request_path() -> str:
+    """A fresh path the CLI watches for "Stop after this file".
+
+    Nothing exists there until the user asks to stop; creating it then makes
+    the CLI finish the file it is on and start no other.  Kept apart from the
+    metadata cache directory, which is emptied whenever a card comes or goes.
+    """
+    global _stop_request_dir
+    if _stop_request_dir is None or not os.path.isdir(_stop_request_dir):
+        _stop_request_dir = tempfile.mkdtemp(prefix="stackcopy-stop-")
+        atexit.register(shutil.rmtree, _stop_request_dir, True)
+    handle, path = tempfile.mkstemp(prefix="stop-", dir=_stop_request_dir)
+    os.close(handle)
+    # Reserve a unique name, then free it: the CLI stops when it reappears.
+    os.unlink(path)
+    return path
 
 
 def clear_metadata_cache() -> None:
@@ -976,6 +1030,15 @@ class StackcopyGUI(ctk.CTk):
         self._bucket_done = {"stack_output": 0, "stack_input": 0, "other": 0}
         self._stack_indexes: dict[str, int] = {}
         self._active_stack_name: str | None = None
+        # This run's own totals from the CLI's "start" event; a continued
+        # import covers less than the plan of the whole card.
+        self._run_bucket_totals: dict[str, int] | None = None
+        self._run_stacks: int | None = None
+        # "Stop after this file": the file the CLI watches for, whether the
+        # user asked for a stop, and whether to quit once it has stopped.
+        self._stop_file: str | None = None
+        self._stop_requested = False
+        self._close_when_stopped = False
         self._update_info = None
         self._update_generation = 0
         self._update_checking = False
@@ -1783,6 +1846,10 @@ class StackcopyGUI(ctk.CTk):
 
     def _begin_plan_scan(self) -> None:
         self._plan_after = None
+        if self._running:
+            # An import started while this scan was still scheduled.  Never
+            # read the card alongside it; the scan reruns afterwards.
+            return
         source = self.src_var.get().strip()
         if not source or not os.path.isdir(source):
             self._plan = None
@@ -2137,11 +2204,16 @@ class StackcopyGUI(ctk.CTk):
         env.pop("STACKCOPY_ASSUME_YES", None)
         if self._assume_yes:
             env["STACKCOPY_ASSUME_YES"] = "1"
+        self._stop_file = new_stop_request_path()
+        env[STOP_FILE_ENV] = self._stop_file
 
         self._last_dest = lightroom
         self._low_space_report = None
         self._degraded = False
         self._terminated_by_user = False
+        self._stop_requested = False
+        self._run_bucket_totals = None
+        self._run_stacks = None
         self._log_lines = []
         self._started_at = time.perf_counter()
         self._transfer_started_at = None
@@ -2157,6 +2229,11 @@ class StackcopyGUI(ctk.CTk):
         self.log_frame.grid_remove()
         self.log_toggle.configure(text="Show detailed log ▾")
         self._clear_log()
+        if self._plan_after is not None:
+            # A preview scan scheduled moments ago (a card was just picked)
+            # must not start alongside the import.
+            self.after_cancel(self._plan_after)
+            self._plan_after = None
         self._cancel_plan_scan()
         self._set_plan_scanning(False)
         self._set_running(True)
@@ -2164,6 +2241,7 @@ class StackcopyGUI(ctk.CTk):
         self.activity.grid()
         self.result_controls.grid_remove()
         self.card_followup_note.grid_remove()
+        self.cancel_btn.configure(state="normal")
         self.running_controls.grid()
         self.progress.grid()
         self.current_file_label.grid()
@@ -2234,7 +2312,9 @@ class StackcopyGUI(ctk.CTk):
 
     def _drain_queue(self) -> None:
         try:
-            while True:
+            # A handler can close the window (quitting after a requested stop
+            # finishes in _handle_done); nothing may touch Tk after that.
+            while not self._closing:
                 kind, payload = self._queue.get_nowait()
                 if kind == "plan":
                     generation, plan = payload
@@ -2276,7 +2356,12 @@ class StackcopyGUI(ctk.CTk):
                     self._handle_done(int(payload))
         except queue.Empty:
             pass
-        self.after(100, self._drain_queue)
+        finally:
+            # Always keep draining: if one handler raised, skipping this would
+            # stop every later progress line and result, leaving the window
+            # stuck in "running" for good.  Tk still reports the exception.
+            if not self._closing:
+                self.after(100, self._drain_queue)
 
     def _handle_progress(self, line: str) -> None:
         fields, filename = parse_progress(line)
@@ -2314,6 +2399,17 @@ class StackcopyGUI(ctk.CTk):
             self._progress_done_bytes = (
                 0 if self._progress_total_bytes is not None else None
             )
+            run_totals = {
+                role: int(fields[key])
+                for role, key in (
+                    ("stack_output", "stacked_outputs"),
+                    ("stack_input", "stack_inputs"),
+                    ("other", "others"),
+                )
+                if key in fields
+            }
+            self._run_bucket_totals = run_totals or None
+            self._run_stacks = int(fields["stacks"]) if "stacks" in fields else None
             self.progress.stop()
             self.progress.configure(mode="determinate")
             self.progress.set(0)
@@ -2354,7 +2450,14 @@ class StackcopyGUI(ctk.CTk):
             self._update_counter_cards()
 
     def _set_phase_heading(self, role: str) -> None:
-        plan_stacks = int(self._plan.get("stacks", 0)) if self._plan else 0
+        if self._stop_requested:
+            # Keep saying the stop was heard; lines still queued from before
+            # it must not make the window look as if it were carrying on.
+            return
+        if self._run_stacks is not None:
+            plan_stacks = self._run_stacks
+        else:
+            plan_stacks = int(self._plan.get("stacks", 0)) if self._plan else 0
         if role in {"stack_output", "stack_input"} and self._active_stack_name:
             current = self._stack_indexes.get(self._active_stack_name, 1)
             self.phase_var.set(
@@ -2426,6 +2529,10 @@ class StackcopyGUI(ctk.CTk):
         self.meta_var.set(" · ".join(pieces))
 
     def _bucket_total(self, role: str) -> int | None:
+        # Once the CLI says what *this* run covers, that wins over the plan:
+        # a continued import must not count against the whole card.
+        if self._run_bucket_totals and role in self._run_bucket_totals:
+            return self._run_bucket_totals[role]
         if not self._plan:
             return None
         key = {
@@ -2448,9 +2555,16 @@ class StackcopyGUI(ctk.CTk):
         terminated = self._terminated_by_user
         self._terminated_by_user = False
         self._proc = None
+        self._discard_stop_file()
         self.progress.stop()
         self._set_running(False)
-        if terminated:
+        if self._close_when_stopped:
+            # The user quit during an import; it has now stopped cleanly.
+            self._finish_close()
+            return
+        # A stop that landed after the last file changes nothing: the run
+        # finished (exit 0) and is reported as the success it is.
+        if terminated and returncode != 0:
             assert self._pending is not None
             was_preview = self._pending[3]
             self._show_result(
@@ -2458,8 +2572,8 @@ class StackcopyGUI(ctk.CTk):
                 (
                     "Nothing was moved. You can retry the preview."
                     if was_preview
-                    else "Completed files are safe. After making room, continue "
-                    "the import to pick up everything left on the card."
+                    else "Completed files are safe. Continue the import to "
+                    "pick up everything left on the card."
                 ),
                 problems=0,
                 allow_open=not was_preview,
@@ -2469,6 +2583,7 @@ class StackcopyGUI(ctk.CTk):
         if (
             returncode != 0
             and self._low_space_report is not None
+            and not self._low_space_report.get("dry_run")
             and not self._assume_yes
         ):
             if messagebox.askyesno(
@@ -2510,7 +2625,13 @@ class StackcopyGUI(ctk.CTk):
             )
         elif returncode == 0:
             elapsed = max(0.001, time.perf_counter() - self._started_at)
-            byte_count = int(self._plan.get("bytes", 0)) if self._plan else 0
+            # This run's bytes when the CLI reported them: a continued import
+            # moves less than the plan of the whole card, and dividing the
+            # card's bytes by the shorter run would overstate the speed.
+            if self._progress_total_bytes is not None:
+                byte_count = self._progress_total_bytes
+            else:
+                byte_count = int(self._plan.get("bytes", 0)) if self._plan else 0
             self._show_result(
                 f"{summary.get('imported', self._total)} files imported",
                 success_metrics(elapsed, byte_count, problems),
@@ -2664,9 +2785,51 @@ class StackcopyGUI(ctk.CTk):
 
     def _on_cancel(self) -> None:
         process = self._proc
-        if process and process.poll() is None:
-            self.phase_var.set("Stopping after this file…")
+        if not process or process.poll() is not None:
+            return
+        if self._stop_requested:
+            return
+        if self._transfer_started_at is None:
+            # Still scanning and running safety checks: nothing has been
+            # written yet, so stopping straight away loses nothing.
+            self.phase_var.set("Stopping…")
             self._terminate_process(process, "stop")
+            return
+        if not self._request_stop_after_current_file():
+            # The request could not be written (say the temp folder was
+            # cleaned away).  A Stop button that does nothing is worse than
+            # the old behaviour, so fall back to it; a rerun is still safe.
+            self.phase_var.set("Stopping…")
+            self._terminate_process(process, "stop")
+
+    def _request_stop_after_current_file(self) -> bool:
+        """Ask the CLI to finish the file it is on and start no other.
+
+        Terminating it instead would abandon a copy midway, leaving a partial
+        temp file in the destination and no summary.  Nothing here waits: the
+        run ends through the usual "done" event once the file is finished.
+        """
+        if not self._stop_file:
+            return False
+        try:
+            with open(self._stop_file, "w", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            self._log_write(f"Could not ask Stackcopy to stop: {exc}\n")
+            return False
+        self._stop_requested = True
+        self._terminated_by_user = True
+        self.cancel_btn.configure(state="disabled")
+        self.phase_var.set("Stopping after this file…")
+        return True
+
+    def _discard_stop_file(self) -> None:
+        path, self._stop_file = self._stop_file, None
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def _terminate_process(self, process: subprocess.Popen, action: str) -> bool:
         if process.poll() is not None:
@@ -2757,7 +2920,12 @@ class StackcopyGUI(ctk.CTk):
             messagebox.showinfo(APP_NAME, message)
             return
         if self._update_checking:
-            self._set_update_notice("Already checking for updates…")
+            # Usually the automatic startup check.  Its result now has to be
+            # reported as an answer to this click, or the user would hear
+            # nothing at all when they are up to date.
+            self._update_manual = True
+            self.update_check_btn.configure(state="disabled")
+            self._set_update_notice("Checking GitHub for a newer version…")
             return
         self._start_update_check(manual=True)
 
@@ -2780,7 +2948,13 @@ class StackcopyGUI(ctk.CTk):
                 "error": "",
             }
             try:
-                payload["info"] = stackcopy_updater.check_for_update(current)
+                opener = update_check_opener()
+                if opener is None:
+                    payload["info"] = stackcopy_updater.check_for_update(current)
+                else:
+                    payload["info"] = stackcopy_updater.check_for_update(
+                        current, opener=opener
+                    )
             except stackcopy_updater.UpdateCheckError as exc:
                 payload["error"] = str(exc)
             except Exception as exc:  # pragma: no cover - defensive
@@ -2798,7 +2972,9 @@ class StackcopyGUI(ctk.CTk):
         if payload.get("generation") != self._update_generation:
             return
         self._update_checking = False
-        manual = bool(payload.get("manual"))
+        # A click that arrived while this check was already running counts.
+        manual = bool(payload.get("manual")) or bool(self._update_manual)
+        self._update_manual = False
         try:
             self.update_check_btn.configure(state="normal")
         except Exception:  # pragma: no cover - teardown races
@@ -3021,12 +3197,36 @@ class StackcopyGUI(ctk.CTk):
     def _on_close(self) -> None:
         process = self._proc
         if process and process.poll() is None:
-            if not messagebox.askyesno(
-                "Quit", "An import is still running. Stop it and quit?"
-            ):
-                return
-            if not self._terminate_process(process, "stop"):
-                return
+            if self._stop_requested:
+                # Already finishing its current file; the user is in a hurry.
+                if not messagebox.askyesno(
+                    "Quit",
+                    "Stackcopy is finishing the file it is on and will then "
+                    "stop. Quit right now instead? That file will be left "
+                    "unfinished and copied again next time.",
+                ):
+                    return
+                if not self._terminate_process(process, "stop"):
+                    return
+            else:
+                if not messagebox.askyesno(
+                    "Quit", "An import is still running. Stop it and quit?"
+                ):
+                    return
+                if (
+                    self._transfer_started_at is not None
+                    and self._request_stop_after_current_file()
+                ):
+                    # Closing the window now would break the CLI's output pipe
+                    # mid-file.  Quit once it has stopped (see _handle_done).
+                    self._close_when_stopped = True
+                    self.phase_var.set("Stopping after this file, then quitting…")
+                    return
+                if not self._terminate_process(process, "stop"):
+                    return
+        self._finish_close()
+
+    def _finish_close(self) -> None:
         self._closing = True
         if self._update_after is not None:
             try:

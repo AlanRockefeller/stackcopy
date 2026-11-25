@@ -154,6 +154,11 @@ def versions_match(left: str, right: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# A release tag as it appears in the path: v1.6.0, v1.6.0-build2, ...  Starting
+# with a letter or digit also rules out the "." and ".." dot segments.
+_RELEASE_TAG_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+
+
 def is_trusted_release_url(url: object) -> bool:
     """True only for an HTTPS release page of this exact repository.
 
@@ -162,11 +167,22 @@ def is_trusted_release_url(url: object) -> bool:
     owner, repository, and the shape of the release path all have to be right,
     and embedded credentials (``https://user@github.com/...``) fail the host
     comparison.
+
+    The check must agree with how a *browser* reads the URL, not just with
+    urlsplit().  A browser treats ``\\`` as ``/`` and resolves ``..`` segments,
+    percent-encoded ones included, so ``.../releases/tag/..\\..\\..\\evil``
+    passes a "/"-based path check yet opens a different repository.  Those
+    characters never occur in a real release URL and are refused outright.
     """
     if not isinstance(url, str) or not url.strip():
         return False
+    text = url.strip()
+    if "\\" in text or "%" in text:
+        return False
+    if any(character.isspace() or not character.isprintable() for character in text):
+        return False
     try:
-        parts = urlsplit(url.strip())
+        parts = urlsplit(text)
     except ValueError:
         return False
     if parts.scheme.lower() != "https":
@@ -189,7 +205,11 @@ def is_trusted_release_url(url: object) -> bool:
         return True
     if rest == ["latest"]:
         return True
-    return len(rest) == 2 and rest[0] == "tag"
+    return (
+        len(rest) == 2
+        and rest[0] == "tag"
+        and _RELEASE_TAG_SEGMENT.fullmatch(rest[1]) is not None
+    )
 
 
 def safe_release_url(url: object) -> str:
@@ -408,15 +428,35 @@ def is_skipped(state: dict, version: str) -> bool:
     return versions_match(skipped, version)
 
 
-def next_automatic_check_due(state: dict) -> datetime | None:
+# How far in the future a stored stamp may be and still count, to absorb an
+# ordinary clock correction.  Anything later was written by a clock that was
+# wrong (or by hand) and is ignored.
+CLOCK_SKEW_ALLOWANCE_SECONDS = 5 * 60
+
+
+def next_automatic_check_due(
+    state: dict, now: datetime | None = None
+) -> datetime | None:
     """When the next automatic check may run, or ``None`` for "right now".
 
     A success buys 24 hours of quiet.  A failure buys an hour, so a machine
     that happened to be offline at launch tries again the same day.  A failure
     recorded *after* the last success is what governs, and vice versa.
+
+    A stamp from the future is treated as never checked.  Otherwise one check
+    made while the clock was set years ahead would silence every automatic
+    check until that date came round, and a stamp near the end of the
+    calendar would overflow when the cooldown is added to it.
     """
-    last_success = parse_timestamp(state.get(LAST_SUCCESS_KEY))
-    last_failure = parse_timestamp(state.get(LAST_FAILURE_KEY))
+    latest_plausible = (now or _utcnow()) + timedelta(
+        seconds=CLOCK_SKEW_ALLOWANCE_SECONDS
+    )
+
+    def plausible(stamp: datetime | None) -> datetime | None:
+        return stamp if stamp is not None and stamp <= latest_plausible else None
+
+    last_success = plausible(parse_timestamp(state.get(LAST_SUCCESS_KEY)))
+    last_failure = plausible(parse_timestamp(state.get(LAST_FAILURE_KEY)))
 
     due_times: list[datetime] = []
     if last_success is not None:
@@ -433,10 +473,11 @@ def should_check_automatically(state: dict, now: datetime | None = None) -> bool
     """Whether the timed background check should run at all."""
     if not update_checks_enabled(state):
         return False
-    due = next_automatic_check_due(state)
+    now = now or _utcnow()
+    due = next_automatic_check_due(state, now)
     if due is None:
         return True
-    return (now or _utcnow()) >= due
+    return now >= due
 
 
 def should_notify(info: UpdateInfo, state: dict, manual: bool = False) -> bool:

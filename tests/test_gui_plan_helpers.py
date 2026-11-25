@@ -617,6 +617,7 @@ class InterruptedResultTests(unittest.TestCase):
     def window(*, preview: bool = False):
         window = mock.Mock(spec=gui.StackcopyGUI)
         window._terminated_by_user = True
+        window._close_when_stopped = False
         window._proc = mock.Mock()
         window._pending = ([], "/photos", "/stacks", preview)
         window.progress = mock.Mock()
@@ -629,8 +630,8 @@ class InterruptedResultTests(unittest.TestCase):
 
         window._show_result.assert_called_once_with(
             "Import cancelled",
-            "Completed files are safe. After making room, continue the import "
-            "to pick up everything left on the card.",
+            "Completed files are safe. Continue the import to pick up "
+            "everything left on the card.",
             problems=0,
             allow_open=True,
             retry_label="Continue import",
@@ -675,6 +676,7 @@ class FailedRunResultTests(unittest.TestCase):
     def window(source: str, *, preview: bool = False, degraded: bool = False):
         window = mock.Mock(spec=gui.StackcopyGUI)
         window._terminated_by_user = False
+        window._close_when_stopped = False
         window._proc = mock.Mock()
         window._low_space_report = None
         window._assume_yes = False

@@ -107,8 +107,9 @@ a = Analysis(
     binaries=[],
     datas=datas,
     # stackcopy is imported lazily/conditionally; name it explicitly so the
-    # GUI bundle still contains the fallback CLI dispatcher.
-    hiddenimports=["stackcopy", "stackcopy_updater"],
+    # GUI bundle still contains the fallback CLI dispatcher.  certifi is too:
+    # its CA bundle lets the update check verify GitHub (update_check_opener).
+    hiddenimports=["stackcopy", "stackcopy_updater", "certifi"],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
