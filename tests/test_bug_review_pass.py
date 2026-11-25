@@ -1,4 +1,4 @@
-"""Regression tests for the bugs found in the 1.6.3 review pass.
+"""Regression tests for the bugs fixed in Stackcopy 1.6.4.
 
 Each class names the bug it pins down.  Display-free throughout: GUI methods
 are exercised on stand-in objects, never a real window.
@@ -35,7 +35,7 @@ from test_gui_update_state import gui  # noqa: E402
 
 def tree(root: Path) -> set[str]:
     return (
-        {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
+        {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
         if root.exists()
         else set()
     )
@@ -316,6 +316,47 @@ class CaseInsensitiveStemTests(unittest.TestCase):
             self.assertIn("multiple JPG files share stem", output)
             self.assertEqual(tree(card), {"P8080001.JPG", "p8080001.jpg"})
 
+    def test_a_stack_is_found_when_its_frames_prefix_case_differs_from_the_output(self):
+        # Lower-case JPG frames sort first and name their records "p...",
+        # while the stacked output is "P...": one sequence all the same.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card"
+            start = datetime(2026, 8, 24, 12)
+            for number in range(1, 4):
+                when = start + timedelta(seconds=number)
+                write_file(card / f"p808000{number}.JPG", b"j", when)
+                write_file(card / f"P808000{number}.ORF", b"r", when)
+            write_file(card / "P8080004.JPG", b"out", start + timedelta(seconds=8))
+            make_pair(card, "P8080006", start + timedelta(minutes=10))
+
+            code, output = run_main(
+                ["--lightroomimport", str(card)],
+                lightroom=root / "Lightroom",
+                stack_input=root / "StackInput",
+                metadata={},
+            )
+
+            self.assertEqual(code, 0, output)
+            self.assertNotIn("JPG-only import detected", output)
+            day = "2026/2026-08-24"
+            self.assertEqual(
+                tree(root / "StackInput"),
+                {
+                    f"{day}/{name}"
+                    for number in range(1, 4)
+                    for name in (f"p808000{number}.JPG", f"P808000{number}.ORF")
+                },
+            )
+            self.assertEqual(
+                tree(root / "Lightroom"),
+                {
+                    f"{day}/P8080004 stacked.JPG",
+                    f"{day}/P8080006.JPG",
+                    f"{day}/P8080006.ORF",
+                },
+            )
+
 
 class SystemFoldersTests(unittest.TestCase):
     """Trashed photos were imported; OS index folders kept a card 'not empty'."""
@@ -515,6 +556,43 @@ class StopAfterThisFileTests(unittest.TestCase):
                 name for name in tree(root) if stackcopy._TEMP_PREFIX in name
             ]
             self.assertEqual(leftovers, [])
+
+    def test_a_stop_during_recovery_finishes_that_file_and_recovers_no_more(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card"
+            make_heuristic_stack(card, datetime(2026, 8, 24, 12))
+            stop_file = root / "stop"
+            real = stackcopy.safe_file_operation
+            recovery_calls = []
+
+            def stack_input_fails_then_stop_mid_recovery(
+                operation, src, dst, label, *args, **kwargs
+            ):
+                if "StackInput" in dst:
+                    return stackcopy.OperationResult(stackcopy.OperationOutcome.FAILED), 0
+                if "recovered" in label:
+                    recovery_calls.append(src)
+                    stop_file.touch()  # the user clicks Stop mid-recovery
+                return real(operation, src, dst, label, *args, **kwargs)
+
+            code, output = self.run_import(
+                root,
+                stop_file,
+                (
+                    mock.patch.object(
+                        stackcopy,
+                        "safe_file_operation",
+                        side_effect=stack_input_fails_then_stop_mid_recovery,
+                    ),
+                ),
+            )
+
+            self.assertEqual(code, 130, output)
+            self.assertIn("Import stopped as requested", output)
+            self.assertEqual(len(recovery_calls), 1, output)
+            # Six stack inputs needed recovering; only the first was started.
+            self.assertEqual(len(tree(card)), 5, output)
 
     def test_without_a_stop_file_the_import_runs_to_completion(self):
         with tempfile.TemporaryDirectory() as tmp:

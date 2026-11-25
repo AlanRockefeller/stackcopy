@@ -204,6 +204,19 @@ def stop_requested() -> bool:
     return bool(path) and os.path.exists(path)
 
 
+def report_stop(stop: BaseException) -> None:
+    """Say why the import stopped early (a stop file or Ctrl-C)."""
+    reason = (
+        "Import stopped as requested"
+        if isinstance(stop, StopRequested)
+        else "Import interrupted by user"
+    )
+    print(
+        f"\n{reason}. No new operations will be started; "
+        "the import can be safely run again."
+    )
+
+
 def _use_utf8_output_for_gui() -> None:
     """Write UTF-8 when the GUI is the reader (STACKCOPY_PROGRESS=1).
 
@@ -3861,7 +3874,13 @@ def main():
             continue
         numeric_info = record.get("numeric")
         if numeric_info and (has_raw_like_companion(record) or record.get("has_jpg")):
-            sequence_key = (record.get("relative_dir", "."), numeric_info["prefix"])
+            # Prefixes compare case-insensitively, like the stems they come
+            # from: p8080001.JPG paired with P8080001.ORF names its record
+            # with whichever spelling was scanned first.
+            sequence_key = (
+                record.get("relative_dir", "."),
+                numeric_info["prefix"].casefold(),
+            )
             sequences_by_prefix.setdefault(sequence_key, []).append(
                 (numeric_info["num"], stem)
             )
@@ -3896,6 +3915,7 @@ def main():
         widen the window for adopting an unrelated frame.
         """
         relative_dir = output_record.get("relative_dir", ".")
+        prefix = prefix.casefold()
         current_sequence = list(sequences_by_prefix.get((relative_dir, prefix), ()))
 
         previous_dir = None
@@ -3932,10 +3952,20 @@ def main():
         return sequence, [previous_dir, relative_dir]
 
     def stack_detection_group_key(record):
-        """Group files for stack detection by folder and numeric filename prefix."""
+        """Group files for stack detection by folder and numeric filename
+        prefix, ignoring the prefix's case."""
         numeric_info = record.get("numeric")
-        prefix = numeric_info["prefix"] if numeric_info else None
+        prefix = numeric_info["prefix"].casefold() if numeric_info else None
         return (record.get("relative_dir", "."), prefix)
+
+    # Warnings name a group by a prefix as it is spelled on the card.
+    stack_group_prefix_spelling = {}
+    for record in file_db.values():
+        numeric_info = record.get("numeric")
+        if numeric_info:
+            stack_group_prefix_spelling.setdefault(
+                stack_detection_group_key(record), numeric_info["prefix"]
+            )
 
     # Reliable stack detection needs RAW+JPG pairing; in groups (folder +
     # numeric filename prefix) that have JPGs but no RAW at all, disable it.
@@ -3981,6 +4011,7 @@ def main():
 
     def describe_stack_detection_group(group):
         relative_dir, prefix = group
+        prefix = stack_group_prefix_spelling.get(group, prefix)
         folder = src_dir if relative_dir == "." else os.path.join(src_dir, relative_dir)
         if prefix is None:
             return display_path(folder)
@@ -4367,6 +4398,7 @@ def main():
         both an ORF and a DNG).  That is a boundary, not a missing frame."""
         if number in card_by_num:
             return False
+        prefix = prefix.casefold()
         for relative_dir in sequence_dirs:
             key = (relative_dir, prefix)
             numbers = source_numbers_cache.get(key)
@@ -4375,7 +4407,7 @@ def main():
                     record["numeric"]["num"]
                     for record in file_db.values()
                     if record.get("numeric")
-                    and record["numeric"]["prefix"] == prefix
+                    and record["numeric"]["prefix"].casefold() == prefix
                     and record.get("relative_dir", ".") == relative_dir
                 }
                 source_numbers_cache[key] = numbers
@@ -5617,15 +5649,7 @@ def main():
         except (KeyboardInterrupt, StopRequested) as stop:
             interrupted = True
             interrupted_remaining = _total_planned - attempted_count
-            reason = (
-                "Import stopped as requested"
-                if isinstance(stop, StopRequested)
-                else "Import interrupted by user"
-            )
-            print(
-                f"\n{reason}. No new operations will be started; "
-                "the import can be safely run again."
-            )
+            report_stop(stop)
 
         # --- Phase G: Recovery Pass & Partial Failure Reporting ---
         # 1. Detect stems that failed COMPLETELY and still need to be "recovered"
@@ -5672,109 +5696,118 @@ def main():
                 print(
                     f"\nRecovering {len(recovery_stems)} stem(s) whose planned moves all failed..."
                 )
-            for stem in recovery_stems:
-                files_by_dest: dict[str, list[dict[str, Any]]] = defaultdict(list)
-                for move_result in execution_results[stem]["moves"]:
-                    if move_result["success"]:
-                        continue
-                    move = move_result["move"]
-                    if not os.path.exists(move.src_path):
-                        continue
-                    # The planner's date, not this file's own mtime: a frame's
-                    # JPG and RAW can straddle midnight, and the planner
-                    # already chose one date for both (see PlannedMove).
-                    file_date = move.dest_date
-                    dest_dir_import = os.path.join(
-                        lightroom_import_base_dir,
-                        str(file_date.year),
-                        file_date.strftime("%Y-%m-%d"),
-                    )
-                    files_by_dest[dest_dir_import].append(move_result)
-
-                for dest_dir_import, move_results in files_by_dest.items():
-                    try:
-                        ensure_directory_once(
-                            dest_dir_import, created_dirs, args.dry_run
-                        )
-                    except OSError as directory_error:
-                        print(
-                            f"Error creating recovery directory '{dest_dir_import}' "
-                            f"for stem '{stem}': {directory_error}"
-                        )
-                        continue
-                    stem_files_for_dest = {}
-                    for move_result in move_results:
+            # A stop requested during recovery is honored the same way as
+            # in the main loop: the file in progress finishes, nothing new
+            # starts, and whatever was not recovered stays on the card.
+            try:
+                for stem in recovery_stems:
+                    files_by_dest: dict[str, list[dict[str, Any]]] = defaultdict(list)
+                    for move_result in execution_results[stem]["moves"]:
+                        if move_result["success"]:
+                            continue
                         move = move_result["move"]
-                        recovery_basename = move.basename_dest
-                        stem_files_for_dest[move.file_type] = {
-                            "basename": recovery_basename,
-                            "path": move.src_path,
-                        }
-                    try:
-                        counter, chosen = pick_unique_basenames_for_stem(
-                            dest_dir_import,
-                            stem_files_for_dest,
-                            args.force,
-                            args.dry_run,
-                            reserved_paths=recovery_reserved_paths,
+                        if not os.path.exists(move.src_path):
+                            continue
+                        # The planner's date, not this file's own mtime: a frame's
+                        # JPG and RAW can straddle midnight, and the planner
+                        # already chose one date for both (see PlannedMove).
+                        file_date = move.dest_date
+                        dest_dir_import = os.path.join(
+                            lightroom_import_base_dir,
+                            str(file_date.year),
+                            file_date.strftime("%Y-%m-%d"),
                         )
-                    except DestinationNameExhausted as exhausted:
-                        name_exhausted_count += len(stem_files_for_dest)
-                        print(
-                            f"Error: cannot recover stem '{stem}': {exhausted}. "
-                            "Its files are left on the source; nothing was overwritten."
-                        )
-                        continue
-                    if counter > 1:
-                        changes = []
-                        for ft, fi in stem_files_for_dest.items():
-                            old = fi["basename"]
-                            new = chosen.get(ft, old)
-                            if new != old:
-                                changes.append((old, new))
-                        print_collision_rename_notice(
-                            dest_dir_import, stem, changes, args.dry_run
-                        )
+                        files_by_dest[dest_dir_import].append(move_result)
 
-                    for move_result in move_results:
-                        move = move_result["move"]
-                        file_info = stem_files_for_dest[move.file_type]
-                        file_dest_basename = chosen.get(
-                            move.file_type, file_info["basename"]
-                        )
-                        dest_path = os.path.join(dest_dir_import, file_dest_basename)
-                        recovery_reserved_paths.add(reservation_key(dest_path))
+                    for dest_dir_import, move_results in files_by_dest.items():
+                        try:
+                            ensure_directory_once(
+                                dest_dir_import, created_dirs, args.dry_run
+                            )
+                        except OSError as directory_error:
+                            print(
+                                f"Error creating recovery directory '{dest_dir_import}' "
+                                f"for stem '{stem}': {directory_error}"
+                            )
+                            continue
+                        stem_files_for_dest = {}
+                        for move_result in move_results:
+                            move = move_result["move"]
+                            recovery_basename = move.basename_dest
+                            stem_files_for_dest[move.file_type] = {
+                                "basename": recovery_basename,
+                                "path": move.src_path,
+                            }
+                        try:
+                            counter, chosen = pick_unique_basenames_for_stem(
+                                dest_dir_import,
+                                stem_files_for_dest,
+                                args.force,
+                                args.dry_run,
+                                reserved_paths=recovery_reserved_paths,
+                            )
+                        except DestinationNameExhausted as exhausted:
+                            name_exhausted_count += len(stem_files_for_dest)
+                            print(
+                                f"Error: cannot recover stem '{stem}': {exhausted}. "
+                                "Its files are left on the source; nothing was overwritten."
+                            )
+                            continue
+                        if counter > 1:
+                            changes = []
+                            for ft, fi in stem_files_for_dest.items():
+                                old = fi["basename"]
+                                new = chosen.get(ft, old)
+                                if new != old:
+                                    changes.append((old, new))
+                            print_collision_rename_notice(
+                                dest_dir_import, stem, changes, args.dry_run
+                            )
 
-                        success, bytes_moved = safe_file_operation(
-                            file_operation,
-                            move.src_path,
-                            dest_path,
-                            f"{operation_label} recovered {move.category.replace('_', ' ')} file",
-                            args.force,
-                            args.dry_run,
-                        )
-                        if success:
-                            move_result["recovered"] = True
-                            recovered_count += 1
-                            if (
-                                operation_outcome_of(success)
-                                is OperationOutcome.COPIED_SOURCE_REMAINS
-                            ):
-                                recovered_source_remains_count += 1
-                            recovery_dest_dirs.add(display_path(dest_dir_import))
-                            total_bytes_moved += bytes_moved
-                            if move.category != "remaining":
-                                moved_stack_groups.add(
-                                    stack_group_of_stem.get(move.stem, move.stem)
-                                )
-                            if args.verbose or args.dry_run:
-                                verb = done_verb
-                                dest_short = display_path(dest_dir_import)
-                                print(
-                                    f"{verb} recovered {move.category.replace('_', ' ')} '{move.basename_orig}' as '{file_dest_basename}' -> '{dest_short}'"
-                                    if file_dest_basename != move.basename_orig
-                                    else f"{verb} recovered {move.category.replace('_', ' ')} '{move.basename_orig}' -> '{dest_short}'"
-                                )
+                        for move_result in move_results:
+                            move = move_result["move"]
+                            file_info = stem_files_for_dest[move.file_type]
+                            file_dest_basename = chosen.get(
+                                move.file_type, file_info["basename"]
+                            )
+                            dest_path = os.path.join(dest_dir_import, file_dest_basename)
+                            if stop_requested():
+                                raise StopRequested
+                            recovery_reserved_paths.add(reservation_key(dest_path))
+
+                            success, bytes_moved = safe_file_operation(
+                                file_operation,
+                                move.src_path,
+                                dest_path,
+                                f"{operation_label} recovered {move.category.replace('_', ' ')} file",
+                                args.force,
+                                args.dry_run,
+                            )
+                            if success:
+                                move_result["recovered"] = True
+                                recovered_count += 1
+                                if (
+                                    operation_outcome_of(success)
+                                    is OperationOutcome.COPIED_SOURCE_REMAINS
+                                ):
+                                    recovered_source_remains_count += 1
+                                recovery_dest_dirs.add(display_path(dest_dir_import))
+                                total_bytes_moved += bytes_moved
+                                if move.category != "remaining":
+                                    moved_stack_groups.add(
+                                        stack_group_of_stem.get(move.stem, move.stem)
+                                    )
+                                if args.verbose or args.dry_run:
+                                    verb = done_verb
+                                    dest_short = display_path(dest_dir_import)
+                                    print(
+                                        f"{verb} recovered {move.category.replace('_', ' ')} '{move.basename_orig}' as '{file_dest_basename}' -> '{dest_short}'"
+                                        if file_dest_basename != move.basename_orig
+                                        else f"{verb} recovered {move.category.replace('_', ' ')} '{move.basename_orig}' -> '{dest_short}'"
+                                    )
+            except (KeyboardInterrupt, StopRequested) as stop:
+                interrupted = True
+                report_stop(stop)
 
         if not args.dry_run:
             failed_count = sum(
