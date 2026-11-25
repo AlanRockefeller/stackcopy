@@ -761,13 +761,20 @@ def lightroom_import_source_conflict(
     return None
 
 
-def _relative_dir_lookup_key(relative_dir: str) -> str:
-    """Normalize a scanned relative directory for cross-platform lookups."""
-    return os.path.normcase(os.path.normpath(relative_dir or ".")).casefold()
+def _relative_dir_lookup_key(relative_dir: str) -> tuple[str, str]:
+    """Key a scanned relative directory for the previous-roll lookup.
+
+    Only the folder's own name ignores case (101OLYMP's predecessor may be
+    spelled 100olymp).  The parent is kept exactly as scanned: both paths come
+    from one scan, so a shared parent is spelled the same, while dcim/100OLYMP
+    beside DCIM/101OLYMP on a case-sensitive disk is an unrelated folder.
+    """
+    parent, name = os.path.split(os.path.normpath(relative_dir or "."))
+    return parent, os.path.normcase(name).casefold()
 
 
 def previous_adjacent_camera_dir(
-    relative_dir: str, known_relative_dirs_by_key: dict[str, str]
+    relative_dir: str, known_relative_dirs_by_key: dict[tuple[str, str], str]
 ) -> str | None:
     """Return the previous sibling camera roll dir, if `relative_dir` has one."""
     normalized = os.path.normpath(relative_dir or ".")
@@ -786,14 +793,7 @@ def previous_adjacent_camera_dir(
     suffix = match.group(2)
     previous_folder = f"{folder_number - 1:03d}{suffix}"
     previous_dir = os.path.normpath(os.path.join(parent, previous_folder))
-    candidate = known_relative_dirs_by_key.get(_relative_dir_lookup_key(previous_dir))
-    # The lookup ignores case, but only the roll folder's own name may differ.
-    # Both paths come from one scan, so a shared parent is spelled the same;
-    # dcim/100OLYMP under a different parent than DCIM/101OLYMP (possible on
-    # a case-sensitive disk) is an unrelated folder, not the previous roll.
-    if candidate is None or os.path.dirname(os.path.normpath(candidate)) != parent:
-        return None
-    return candidate
+    return known_relative_dirs_by_key.get(_relative_dir_lookup_key(previous_dir))
 
 
 def iter_source_file_entries(src_dir: str, recursive: bool = False, exclude_dirs=()):

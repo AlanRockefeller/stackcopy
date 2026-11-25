@@ -348,6 +348,54 @@ class CaseInsensitiveStemTests(unittest.TestCase):
             }
             self.assertEqual(borrowed, set(), output)
 
+    def test_the_real_previous_roll_is_found_beside_a_case_variant_parent(self):
+        # dcim/100OLYMP and DCIM/100OLYMP fold to the same path; the one under
+        # DCIM must still be found as the roll before DCIM/101OLYMP.
+        for unrelated_first in (True, False):
+            with self.subTest(unrelated_first=unrelated_first), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                card = root / "card"
+                (card / "dcim").mkdir(parents=True)
+                if (card / "DCIM").exists():
+                    self.skipTest("case-insensitive filesystem")
+                base = datetime(2026, 8, 24, 12)
+                rolls = [
+                    (card / "dcim" / "100OLYMP", "p", base.replace(hour=9)),
+                    (card / "DCIM" / "100OLYMP", "P", base),
+                ]
+                if not unrelated_first:
+                    rolls.reverse()
+                for folder, prefix, start in rolls:
+                    for index, number in enumerate((1866, 1867)):
+                        make_pair(
+                            folder, f"{prefix}808{number}", start.replace(second=index * 2)
+                        )
+                make_pair(card / "DCIM" / "101OLYMP", "P8081868", base.replace(second=4))
+                write_file(
+                    card / "DCIM" / "101OLYMP" / "P8081869.JPG",
+                    b"stack output",
+                    base.replace(second=6),
+                )
+
+                code, output = run_main(
+                    ["--lightroomimport", str(card)],
+                    lightroom=root / "Lightroom",
+                    stack_input=root / "StackInput",
+                    metadata={},
+                )
+
+                self.assertEqual(code, 0, output)
+                day = "2026/2026-08-24"
+                self.assertEqual(
+                    tree(root / "StackInput"),
+                    {
+                        f"{day}/P808{number}.{ext}"
+                        for number in (1866, 1867, 1868)
+                        for ext in ("JPG", "ORF")
+                    },
+                    output,
+                )
+
     def test_a_stack_is_found_when_its_frames_prefix_case_differs_from_the_output(self):
         # Lower-case JPG frames sort first and name their records "p...",
         # while the stacked output is "P...": one sequence all the same.
